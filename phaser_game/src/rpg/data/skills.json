@@ -1,0 +1,44 @@
+[
+  {
+    "id": "slash",
+    "name": "Slash",
+    "description": "A basic physical strike. Costs no MP.",
+    "cost": 0,
+    "power": 1.0,
+    "element": "physical",
+    "targeting": "single-enemy",
+    "category": "physical"
+  },
+  {
+    "id": "fireball",
+    "name": "Fireball",
+    "description": "Hurls a ball of fire at one enemy.",
+    "cost": 6,
+    "power": 1.6,
+    "element": "fire",
+    "targeting": "single-enemy",
+    "category": "magical"
+  },
+  {
+    "id": "ice_spike",
+    "name": "Ice Spike",
+    "description": "Impales one enemy on a shard of ice.",
+    "cost": 6,
+    "power": 1.6,
+    "element": "ice",
+    "targeting": "single-enemy",
+    "category": "magical"
+  },
+  {
+    "id": "guard_up",
+    "name": "Guard Up",
+    "description": "Raises the caster's DEF by 10 for 3 turns.",
+    "cost": 4,
+    "power": 0,
+    "element": "physical",
+    "targeting": "self",
+    "category": "physical",
+    "buff": { "def": 10 },
+    "buffTurns": 3
+  }
+]

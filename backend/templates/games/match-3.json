@@ -1,0 +1,27 @@
+{
+  "id": "match-3",
+  "name": "Gem Match-3",
+  "tagline": "Swap gems, match three in a row.",
+  "description": "Bejeweled-style match-3 puzzle. 8x8 grid, six gem colors with animated sparkle, swap-to-match logic, cascading drops, combo scoring, and a 60-second timer.",
+  "category": "puzzle",
+  "complexity": "small",
+  "screenshot_url": null,
+  "estimated_minutes": 25,
+  "estimated_credits": 180,
+  "estimated_usd": 1.80,
+  "tags": ["puzzle", "match-3", "gems", "casual"],
+  "skill": null,
+  "prompt_template": "Build a match-3 puzzle game in Unity 2D. 8x8 board of gems in 6 colors. Click and drag two adjacent gems to swap; if a row/column of 3+ same-colored gems forms, they pop and gems above fall down with cascade detection. 60-second timer, score tracker, simple game-over screen.",
+  "assets": [
+    {"type": "sprite", "name": "gem_red", "resolution": "1K", "prompt": "red faceted gem icon, shiny, transparent background"},
+    {"type": "sprite", "name": "gem_blue", "resolution": "1K", "prompt": "blue faceted sapphire gem icon, shiny, transparent background"},
+    {"type": "sprite", "name": "gem_green", "resolution": "1K", "prompt": "green emerald gem icon, shiny, transparent background"},
+    {"type": "sprite", "name": "gem_yellow", "resolution": "1K", "prompt": "yellow topaz gem icon, shiny, transparent background"},
+    {"type": "sprite", "name": "gem_purple", "resolution": "1K", "prompt": "purple amethyst gem icon, shiny, transparent background"},
+    {"type": "sprite", "name": "gem_white", "resolution": "1K", "prompt": "white diamond gem icon, shiny, transparent background"},
+    {"type": "particle_fx", "name": "gem_pop", "resolution": "1K", "prompt": "sparkly burst, white and pastel particles, transparent background"},
+    {"type": "background", "name": "match3_bg", "resolution": "2K", "prompt": "cozy parchment puzzle game background, soft pastel"}
+  ],
+  "scripts": ["GridManager.cs", "GemController.cs", "MatchDetector.cs", "ScoreUI.cs", "GameTimer.cs"],
+  "scene_layout": {"type": "ui", "canvas": "ScreenSpaceOverlay", "grid_size": [8, 8]}
+}

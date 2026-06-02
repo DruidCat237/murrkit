@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>murrkit · game</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #1a1a1a; overflow: hidden; }
+      #game-container { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+      #status-bar {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        background: rgba(0,0,0,0.85); color: #ccc;
+        font-family: monospace; font-size: 11px; padding: 4px 8px;
+        z-index: 1000; pointer-events: none;
+        display: none;
+      }
+      body.debug #status-bar { display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="game-container"></div>
+    <div id="status-bar">murrkit · loading…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

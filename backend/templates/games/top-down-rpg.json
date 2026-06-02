@@ -1,0 +1,25 @@
+{
+  "id": "top-down-rpg",
+  "name": "Top-down Adventure",
+  "tagline": "Zelda-lite room exploration with sword combat.",
+  "description": "Top-down 2D adventure starter. Player with 4-directional walk, sword attack, HP bar, one enemy type with attack AI, a 16x16 tileset for grass/path/wall, a single room with a key and door pattern.",
+  "category": "rpg",
+  "complexity": "medium",
+  "screenshot_url": null,
+  "estimated_minutes": 55,
+  "estimated_credits": 400,
+  "estimated_usd": 4.00,
+  "tags": ["rpg", "top-down", "adventure", "combat", "zelda"],
+  "skill": null,
+  "prompt_template": "Build a Unity 2D top-down adventure. Player has 4-directional walk animations (up/down/left/right) and a sword swing on space. Add HP bar (3 hearts). One enemy goblin patrols and attacks when player is close. Room with grass tileset, walls, one key pickup, and a door that opens when key is held. Camera follows player.",
+  "assets": [
+    {"type": "spritesheet", "name": "hero_topdown", "resolution": "2K", "animations": ["idle_down", "walk_down", "walk_up", "walk_left", "walk_right", "attack_down"], "frames_per_anim": 4, "prompt": "human hero in green tunic, top-down view, 32x32 pixel art"},
+    {"type": "spritesheet", "name": "goblin", "resolution": "1K", "animations": ["idle", "walk", "attack"], "frames_per_anim": 4, "prompt": "green goblin enemy, top-down view, 32x32 pixel art"},
+    {"type": "sprite", "name": "heart", "resolution": "1K", "prompt": "red heart UI icon, transparent background"},
+    {"type": "sprite", "name": "key", "resolution": "1K", "prompt": "gold key icon, top-down, transparent background"},
+    {"type": "sprite", "name": "door_closed", "resolution": "1K", "prompt": "wooden door closed, top-down view, 32x32 pixel art"},
+    {"type": "tileset", "name": "grass_topdown", "resolution": "2K", "tile_type": "ground", "prompt": "grass, dirt path, stone wall tiles, top-down 16x16 pixel art"}
+  ],
+  "scripts": ["TopDownPlayer.cs", "PlayerSword.cs", "EnemyAI2D.cs", "Health.cs", "PickupTrigger.cs", "DoorController.cs"],
+  "scene_layout": {"type": "world", "use_tilemap": true, "use_cinemachine": true, "level_size": [640, 480]}
+}

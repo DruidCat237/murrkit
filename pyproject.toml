@@ -1,0 +1,66 @@
+[project]
+name = "murrkit"
+version = "0.1.0"
+description = "Autonomous Phaser 3 + TypeScript game-dev orchestrator — sprite sheets, assets, headless playtest, vision-gated build loop"
+requires-python = ">=3.13"
+
+dependencies = [
+    # Core
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "loguru>=0.7",
+    # LLM
+    "openai>=1.58",        # DeepSeek V4 uses OpenAI-compatible API
+    "google-generativeai>=0.8",  # Gemini (vision compare-mode + triage)
+    # Backend
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "python-multipart>=0.0.20",
+    # HTTP client
+    "httpx>=0.28",
+    "aiohttp>=3.11",
+    "requests>=2.32",
+    "tenacity>=9.0",       # retry/backoff for DeepSeek + Kitty
+    "websockets>=14.0",
+    # Image processing
+    "pillow>=11.0",
+    "rembg>=2.0",
+    # Audio
+    "elevenlabs>=1.17",
+    # File watcher (asset-tree change events to frontend)
+    "watchdog>=6.0.0",
+    "onnxruntime>=1.26.0",
+    # YAML for level DSL
+    "pyyaml>=6.0",
+    # Playwright for headless Phaser playtest (vision-loop)
+    "playwright>=1.49",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "agents", "tools", "backend"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501"]  # let formatter handle line length
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true

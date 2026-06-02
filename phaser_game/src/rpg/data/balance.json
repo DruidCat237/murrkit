@@ -1,0 +1,8 @@
+[
+  {
+    "id": "hero_growth",
+    "maxLevel": 10,
+    "xpToLevel": [10, 25, 45, 70, 100, 140, 190, 250, 320],
+    "statsPerLevel": { "hp": 12, "mp": 4, "atk": 3, "def": 2, "mat": 2, "mdf": 2, "spd": 1, "luk": 1 }
+  }
+]

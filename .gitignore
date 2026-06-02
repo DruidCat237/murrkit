@@ -1,0 +1,102 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.uv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Projects output (gitignored — large generated assets)
+projects/*/
+!projects/.gitkeep
+public_files/
+
+# Reports
+reports/
+
+# SQLite
+*.db
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+*.tsbuildinfo
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit
+*.pem
+*.key
+*.cert
+
+# Phaser game
+phaser_game/node_modules/
+# External game cartridges — private games loaded at runtime, never published
+phaser_game/src/cartridges/
+# Per-game level markers for external cartridge games (selectable locally, not shipped)
+phaser_game/levels/volleyball.yaml
+phaser_game/levels/menu.yaml
+phaser_game/dist/
+phaser_game/.vite/
+phaser_game/test-results/
+phaser_game/playwright-report/
+phaser_game/.captures/
+**/.captures/
+
+# Generated game assets (large; produced by the pipeline at runtime — not shipped)
+public/assets/
+phaser_game/public/assets/
+# Unity-style "Assets/" (capital A) — pipeline-generated content, never shipped
+phaser_game/Assets/
+**/Assets/Generated/
+
+# --- Private dev state & orchestration — NEVER publish ---
+# NOTE: gitignore only treats '#' as a comment at the START of a line.
+# Inline comments become part of the pattern, silently breaking the ignore.
+# Keep every comment on its own line below.
+# oh-my-claudecode state, sessions, plans, research, megaprompts
+.omc/
+# local Claude Code config (settings.local.json holds personal paths)
+.claude/
+# runtime: chat uploads, screenshots, references, playtest output
+public_files/
+playtest_mcp/
+# auto-generated on backend start with a PROJECT_ROOT-derived path (backend/routers/chat.py)
+backend/playtest_mcp.json
+
+# Root scratch / debug dumps (regenerated — never tracked)
+/pt*.json
+/after_fix*.json
+/baseline_*.json
+/screenshot_test.json
+/shot_init.json
+/ss_home.json
+/cc*.json
+/vite_root.html
+/C:Users*
+
+# Root scratch screenshots / playtest captures (never publish — keep images in docs/ if needed)
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp

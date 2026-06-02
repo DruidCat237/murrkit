@@ -1,0 +1,89 @@
+[
+  {
+    "id": "potion",
+    "name": "Potion",
+    "kind": "consumable",
+    "description": "Restores 50 HP to one ally.",
+    "price": 30,
+    "stackMax": 99,
+    "useEffect": { "hp": 50 }
+  },
+  {
+    "id": "ether",
+    "name": "Ether",
+    "kind": "consumable",
+    "description": "Restores 20 MP to one ally.",
+    "price": 80,
+    "stackMax": 99,
+    "useEffect": { "mp": 20 }
+  },
+  {
+    "id": "tonic",
+    "name": "Power Tonic",
+    "kind": "consumable",
+    "description": "Raises ATK by 8 for 3 turns.",
+    "price": 120,
+    "stackMax": 20,
+    "useEffect": { "buff": { "atk": 8 }, "buffTurns": 3 }
+  },
+  {
+    "id": "rusty_sword",
+    "name": "Rusty Sword",
+    "kind": "equipment",
+    "slot": "weapon",
+    "description": "A worn blade. Better than fists, barely.",
+    "price": 50,
+    "stackMax": 1,
+    "element": "physical",
+    "stats": { "atk": 6 }
+  },
+  {
+    "id": "flame_blade",
+    "name": "Flame Blade",
+    "kind": "equipment",
+    "slot": "weapon",
+    "description": "A sword wreathed in fire. Strong vs frost foes.",
+    "price": 400,
+    "stackMax": 1,
+    "element": "fire",
+    "stats": { "atk": 18, "mat": 6 }
+  },
+  {
+    "id": "leather_armor",
+    "name": "Leather Armor",
+    "kind": "equipment",
+    "slot": "body",
+    "description": "Light protection that does not slow you down.",
+    "price": 90,
+    "stackMax": 1,
+    "stats": { "def": 8, "spd": 1 }
+  },
+  {
+    "id": "iron_shield",
+    "name": "Iron Shield",
+    "kind": "equipment",
+    "slot": "offhand",
+    "description": "A solid shield. Cuts your speed a touch.",
+    "price": 110,
+    "stackMax": 1,
+    "stats": { "def": 10, "spd": -2 }
+  },
+  {
+    "id": "luck_charm",
+    "name": "Lucky Charm",
+    "kind": "equipment",
+    "slot": "accessory",
+    "description": "A four-leaf clover sealed in glass.",
+    "price": 150,
+    "stackMax": 1,
+    "stats": { "luk": 12, "mp": 5 }
+  },
+  {
+    "id": "slime_gel",
+    "name": "Slime Gel",
+    "kind": "material",
+    "description": "A blob of sticky residue. Used in crafting.",
+    "price": 5,
+    "stackMax": 99
+  }
+]

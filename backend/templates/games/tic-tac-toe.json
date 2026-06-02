@@ -1,0 +1,22 @@
+{
+  "id": "tic-tac-toe",
+  "name": "Cat-Tac-Toe",
+  "tagline": "Classic 3x3 grid, cat sprites for X/O.",
+  "description": "End-to-end smoke test game. Builds a 3x3 grid, generates cat-themed X and O sprites, wires click-to-place logic, win/draw detection, and a restart UI. The simplest possible end-to-end pipeline exercise.",
+  "category": "puzzle",
+  "complexity": "trivial",
+  "screenshot_url": null,
+  "estimated_minutes": 8,
+  "estimated_credits": 64,
+  "estimated_usd": 0.64,
+  "tags": ["puzzle", "cat", "smoke-test", "tic-tac-toe", "starter"],
+  "skill": "cat-tac-toe",
+  "prompt_template": "Build cat-tac-toe in Unity 2D. Use the cat-tac-toe skill end-to-end.",
+  "assets": [
+    {"type": "sprite", "name": "cat_x", "resolution": "1K", "prompt": "smiling orange cat face, simple flat icon, transparent background"},
+    {"type": "sprite", "name": "cat_o", "resolution": "1K", "prompt": "sleepy black cat curled in O shape, simple flat icon, transparent background"},
+    {"type": "ui_element", "name": "restart_button", "resolution": "1K", "prompt": "rounded restart button, soft pastel"}
+  ],
+  "scripts": ["BoardManager.cs", "TileController.cs", "GameStateUI.cs"],
+  "scene_layout": {"type": "ui", "canvas": "ScreenSpaceCamera", "grid_size": [3, 3]}
+}

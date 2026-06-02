@@ -1,0 +1,41 @@
+[
+  {
+    "id": "slime",
+    "name": "Green Slime",
+    "stats": { "hp": 40, "mp": 0, "atk": 10, "def": 4, "mat": 0, "mdf": 2, "spd": 6, "luk": 2 },
+    "xp": 8,
+    "skills": [],
+    "resistances": { "fire": 1.5, "ice": 0.5 },
+    "drops": {
+      "goldMin": 3,
+      "goldMax": 9,
+      "drops": [{ "itemId": "slime_gel", "chance": 0.6 }, { "itemId": "potion", "chance": 0.1 }]
+    }
+  },
+  {
+    "id": "frost_bat",
+    "name": "Frost Bat",
+    "stats": { "hp": 28, "mp": 12, "atk": 12, "def": 3, "mat": 14, "mdf": 6, "spd": 14, "luk": 5 },
+    "xp": 14,
+    "skills": ["ice_spike"],
+    "resistances": { "ice": 0.25, "fire": 1.75 },
+    "drops": {
+      "goldMin": 8,
+      "goldMax": 18,
+      "drops": [{ "itemId": "ether", "chance": 0.2 }]
+    }
+  },
+  {
+    "id": "stone_golem",
+    "name": "Stone Golem",
+    "stats": { "hp": 120, "mp": 0, "atk": 22, "def": 18, "mat": 0, "mdf": 10, "spd": 4, "luk": 1 },
+    "xp": 40,
+    "skills": ["guard_up"],
+    "resistances": { "earth": 0.5, "thunder": 1.5 },
+    "drops": {
+      "goldMin": 30,
+      "goldMax": 60,
+      "drops": [{ "itemId": "iron_shield", "chance": 0.15 }, { "itemId": "potion", "chance": 0.4, "qty": 2 }]
+    }
+  }
+]

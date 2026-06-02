@@ -1,0 +1,38 @@
+# rpg_demo.yaml — OPTIONAL data marker for the RPG engine demo.
+#
+# RpgDemoScene is a standalone, self-contained scene: it generates its own
+# placeholder textures and pulls all content from src/rpg/data/*.json, so it does
+# NOT consume this file the way the slingshot levels consume their YAML through
+# buildLevelFromYAML. It exists so `?level=rpg_demo` reads as a first-class level
+# in tooling/listings and as a placeholder for future data-driven encounter specs
+# (party, enemy formation, terrain) once the engine grows beyond the scaffold.
+#
+# Activate the demo with:  http://localhost:5173/?level=rpg_demo
+
+id: rpg_demo
+kind: rpg
+notes: >
+  Data-driven RPG engine scaffold demo. Player vs one Green Slime. HP/MP bars,
+  action menu (Attack / Fireball / Guard / Potion), floating damage numbers, and
+  an inventory panel (press I) for equip/unequip. Content lives in
+  src/rpg/data/*.json; systems in src/rpg/systems; UI kit in src/rpg/ui.
+
+# Forward-looking encounter shape (NOT yet read by the scene — design reference):
+encounter:
+  party:
+    - id: hero
+      base: { hp: 80, mp: 30, atk: 14, def: 8, mat: 12, mdf: 6, spd: 10, luk: 5 }
+      growth: hero_growth
+      level: 3
+  enemies:
+    - slime
+  startingInventory:
+    gold: 120
+    items:
+      - { id: rusty_sword, qty: 1 }
+      - { id: flame_blade, qty: 1 }
+      - { id: leather_armor, qty: 1 }
+      - { id: iron_shield, qty: 1 }
+      - { id: luck_charm, qty: 1 }
+      - { id: potion, qty: 3 }
+      - { id: ether, qty: 1 }

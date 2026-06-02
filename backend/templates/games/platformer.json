@@ -1,0 +1,24 @@
+{
+  "id": "platformer",
+  "name": "Cat Platformer",
+  "tagline": "Side-scroller with jumping cat hero.",
+  "description": "Classic 2D platformer starter. Cat hero with idle/walk/jump animations, gravity & jump physics, coin pickups, simple enemy patrol, lives counter, and a single hand-crafted level using a 32x32 tileset.",
+  "category": "platformer",
+  "complexity": "medium",
+  "screenshot_url": null,
+  "estimated_minutes": 45,
+  "estimated_credits": 320,
+  "estimated_usd": 3.20,
+  "tags": ["platformer", "side-scroller", "physics", "cat"],
+  "skill": null,
+  "prompt_template": "Build a Unity 2D side-scrolling platformer. The hero is a cat sprite with idle/walk/jump animations. Add gravity, jump on space, walk on A/D. Include a Tilemap floor with a few platforms, 3 coin pickups, and a simple enemy that walks left/right on a platform. UI shows coin count and 3 lives. Use Cinemachine for camera follow.",
+  "assets": [
+    {"type": "spritesheet", "name": "cat_hero", "resolution": "2K", "animations": ["idle", "walk", "jump", "hurt"], "frames_per_anim": 4, "prompt": "orange tabby cat hero, simple cartoon, side-view, 64x64 pixel art"},
+    {"type": "spritesheet", "name": "enemy_slime", "resolution": "1K", "animations": ["idle", "walk"], "frames_per_anim": 4, "prompt": "green slime enemy, side-view, 48x48 pixel art"},
+    {"type": "sprite", "name": "coin", "resolution": "1K", "prompt": "gold coin with star, transparent background, side-view"},
+    {"type": "tileset", "name": "grass_tiles", "resolution": "2K", "tile_type": "ground", "prompt": "grass and dirt platform tiles, 32x32 pixel art"},
+    {"type": "background", "name": "sky_layer", "resolution": "2K", "layers": ["sky", "clouds", "mountains"], "prompt": "cute pastel sky background with parallax mountains"}
+  ],
+  "scripts": ["PlayerController2D.cs", "CoinPickup.cs", "EnemyPatrol.cs", "Health.cs", "HUDController.cs"],
+  "scene_layout": {"type": "world", "use_tilemap": true, "use_cinemachine": true, "level_size": [1920, 720]}
+}

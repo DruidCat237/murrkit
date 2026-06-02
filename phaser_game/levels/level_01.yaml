@@ -1,0 +1,314 @@
+# level_01.yaml — AngryCatPhaser, CLEAN READABLE FORT (regression pass)
+#
+# Fixes this pass:
+#   R2 — slingshot "wbita w beczkę": barrel renders IN FRONT of the slingshot
+#        (depth 6 > 5) and the trunk is sunk ~15px into the barrel mouth, so the
+#        barrel rim occludes the trunk base → planted, not perched.
+#   R3 — clean layout: three evenly-spaced, NON-overlapping structures
+#        (scout · glass cage · wood keep) with the stone wall hugging the keep's
+#        right edge as a back-wall (no lone pillar in empty space).
+#
+# Solvability preserved (measured cat sweep reaches ~x700):
+#   bot targets the closest destroyOnHit mouse, pulls 180px opposite → ~900px/s.
+#   Cat bowls along the ground; breakable glass(hp1)/wood(hp1) let it through;
+#   a toppling block chain-crushes mice within 90px. Every mouse has two death
+#   paths: direct sweep OR adjacent-structure topple. Patched cat (shot 3) splits
+#   ×3 to blanket the right-side keep.
+#
+# Pixel math (canvas 1280×720, ground top y=650; ALL sprites have 0 padding):
+#   slingshot 480×906 @0.22 → 106×199 ; barrel 122×164 @0.65 → 79×107 (top 543)
+#   slingshot y=558 → visible bottom 558, sunk 15px below barrel top → occluded
+#   mouse 256×512 @0.11 → 28×56 ; King @0.16 → 41×82
+#   plank 983×219 @0.20 rot → 44×197 post (top 551-98.3=452.7) ; cap @0.12 origin-bottom y=466 (17px overlap)
+#   glass 602×993 @0.13 → 78×129 (top 521) ; stone @0.20 rot → 38×202 wall
+
+id: level_01
+notes: |
+  Clean readable fort. L→R: lone Scout · glass cage (1 mouse) · open mouse ·
+  wood keep (King + Guard) backed by a stone wall. Cats: Black (heavy),
+  Yellow (phases wood), Patched (splits ×3 over the keep). 5 mice, 3 cats.
+
+camera:
+  width: 1280
+  height: 720
+  backgroundColor: "#87CEEB"
+  worldBounds: [0, 0, 1400, 720]
+  followTarget: CatBlack
+
+background:
+  layers:
+    - { key: bg_sky, path: /assets/angrycat/Backgrounds/wide_cartoon_backdrop_landscap/bg_wide_cartoon_backdrop_landscap_sky.png, scrollFactor: 0.1 }
+    - { key: bg_far, path: /assets/angrycat/Backgrounds/wide_cartoon_backdrop_landscap/bg_wide_cartoon_backdrop_landscap_far.png, scrollFactor: 0.35, alpha: 0.92 }
+    - { key: bg_mid, path: /assets/angrycat/Backgrounds/wide_cartoon_backdrop_landscap/bg_wide_cartoon_backdrop_landscap_mid.png, scrollFactor: 0.6, alpha: 0.92 }
+
+ground:
+  y: 650
+  width: 1500
+  height: 70
+  tile: { key: ground_tile, path: /assets/angrycat/Tilesets/ground_tile_single.png }
+
+objects:
+  # ---- LAUNCHER — slingshot SUNK into barrel (barrel in front) ------------
+  - name: SlingshotBase
+    kind: prop
+    sprite: { key: barrel, path: /assets/angrycat/Sprites/a_small_short_wooden_barrel_or/barrel_single.png }
+    x: 180
+    y: 650
+    scale: 0.65
+    origin: [0.5, 1.0]
+    depth: 6          # IN FRONT of the slingshot trunk → rim occludes base = "wbita"
+
+  - name: Slingshot
+    kind: prop
+    sprite: { key: slingshot_y, path: /assets/angrycat/Sprites/single_y_shaped_wooden_slingsh/single_y_shaped_wooden_slingsh_tight.png }
+    x: 180
+    y: 558            # sunk 15px into the barrel mouth (barrel top = 543)
+    scale: 0.22
+    origin: [0.5, 1.0]
+    depth: 5
+
+  # ---- CATS (queue: Black → Yellow → Patched) ----------------------------
+  - name: CatBlack
+    kind: cat
+    sprite: { key: cat_black_idle, path: /assets/angrycat/Sprites/grumpy_fat_round_black_cat_cha/grumpy_fat_round_black_cat_cha_frame0.png }
+    x: 180
+    y: 399
+    scale: 0.22
+    origin: [0.5, 0.5]
+    depth: 8
+    collidesWith: [Scout, GlassMouse, OpenMouse, King, Guard, GlassL, GlassR, GlassRoof, WoodPostL, WoodPostR, WoodCap, StoneWall]
+
+  - name: CatYellow
+    kind: cat
+    sprite: { key: cat_yellow_idle, path: /assets/angrycat/Sprites/sleek_fast_yellow_cat_with_sha/sleek_fast_yellow_cat_with_sha_frame0.png }
+    x: 180
+    y: 399
+    scale: 0.22
+    origin: [0.5, 0.5]
+    depth: 8
+    collidesWith: [Scout, GlassMouse, OpenMouse, King, Guard, GlassL, GlassR, GlassRoof, WoodPostL, WoodPostR, WoodCap, StoneWall]
+
+  - name: CatPatched
+    kind: cat
+    sprite: { key: cat_patched_idle, path: /assets/angrycat/Sprites/small_chubby_black_and_white_p/small_chubby_black_and_white_p_frame0.png }
+    x: 180
+    y: 399
+    scale: 0.22
+    origin: [0.5, 0.5]
+    depth: 8
+    collidesWith: [Scout, GlassMouse, OpenMouse, King, Guard, GlassL, GlassR, GlassRoof, WoodPostL, WoodPostR, WoodCap, StoneWall]
+
+  # ---- ENEMY 1 — SCOUT on open ground (closest → shot-1 kill) ------------
+  - name: Scout
+    kind: enemy
+    sprite: { key: mouse, path: /assets/angrycat/Sprites/mouse_blink_2frame/mouse_blink_2frame.png, framesX: 2 }
+    x: 360
+    y: 650
+    scale: 0.11
+    origin: [0.5, 0.92]
+    flipX: true
+    hp: 1
+    destroyOnHit: true
+    scoreOnDestroy: 100
+    scaredKey: mouse_scared
+    scaredPath: /assets/angrycat/Sprites/mouse_scared_v2/mouse_scared_v2.png
+    defeatedKey: mouse_defeated
+    defeatedPath: /assets/angrycat/Sprites/mouse_defeated_v2/mouse_defeated_v2.png
+    depth: 4
+
+  # ---- STRUCTURE 1 — GLASS CAGE (1 mouse, panes shatter, pass-through) ----
+  - name: GlassL
+    kind: block
+    material: glass
+    crackKey: glass_cracked
+    crackPath: /assets/angrycat/Sprites/glass_cracked_v2/glass_cracked_v2.png
+    sprite: { key: glass_pane, path: /assets/angrycat/Sprites/single_translucent_pale_blue_g/single_translucent_pale_blue_g_tight.png }
+    x: 445
+    y: 650
+    scale: 0.13
+    origin: [0.5, 1.0]
+    alpha: 0.8
+    depth: 3
+
+  - name: GlassR
+    kind: block
+    material: glass
+    crackKey: glass_cracked
+    crackPath: /assets/angrycat/Sprites/glass_cracked_v2/glass_cracked_v2.png
+    sprite: { key: glass_pane, path: /assets/angrycat/Sprites/single_translucent_pale_blue_g/single_translucent_pale_blue_g_tight.png }
+    x: 525
+    y: 650
+    scale: 0.13
+    origin: [0.5, 1.0]
+    alpha: 0.8
+    depth: 7          # front pane occludes the caged mouse for a "behind glass" read
+
+  # Wood-beam roof seated on the two glass panes (tops at y=521).
+  - name: GlassRoof
+    kind: block
+    material: wood
+    hp: 1
+    sprite: { key: plank_h, path: /assets/angrycat/Sprites/single_brown_wooden_plank_hori/single_brown_wooden_plank_hori_tight.png }
+    x: 485
+    y: 525
+    scale: 0.11
+    origin: [0.5, 1.0]
+    depth: 3
+
+  - name: GlassMouse
+    kind: enemy
+    sprite: { key: mouse, path: /assets/angrycat/Sprites/mouse_blink_2frame/mouse_blink_2frame.png, framesX: 2 }
+    x: 485
+    y: 650
+    scale: 0.11
+    origin: [0.5, 0.92]
+    flipX: true
+    hp: 1
+    destroyOnHit: true
+    scoreOnDestroy: 150
+    scaredKey: mouse_scared
+    scaredPath: /assets/angrycat/Sprites/mouse_scared_v2/mouse_scared_v2.png
+    defeatedKey: mouse_defeated
+    defeatedPath: /assets/angrycat/Sprites/mouse_defeated_v2/mouse_defeated_v2.png
+    depth: 4
+
+  # ---- ENEMY 3 — OPEN mouse on grass between the two structures ----------
+  - name: OpenMouse
+    kind: enemy
+    sprite: { key: mouse, path: /assets/angrycat/Sprites/mouse_blink_2frame/mouse_blink_2frame.png, framesX: 2 }
+    x: 545
+    y: 650
+    scale: 0.11
+    origin: [0.5, 0.92]
+    flipX: true
+    hp: 1
+    destroyOnHit: true
+    scoreOnDestroy: 100
+    scaredKey: mouse_scared
+    scaredPath: /assets/angrycat/Sprites/mouse_scared_v2/mouse_scared_v2.png
+    defeatedKey: mouse_defeated
+    defeatedPath: /assets/angrycat/Sprites/mouse_defeated_v2/mouse_defeated_v2.png
+    depth: 4
+
+  # ---- STRUCTURE 2 — WOOD KEEP (King + Guard), backed by stone wall -------
+  - name: WoodPostL
+    kind: block
+    material: wood
+    hp: 1
+    sprite: { key: plank_h, path: /assets/angrycat/Sprites/single_brown_wooden_plank_hori/single_brown_wooden_plank_hori_tight.png }
+    x: 580
+    y: 551
+    scale: 0.20
+    origin: [0.5, 0.5]
+    rotation: 1.5708
+    depth: 3
+
+  - name: WoodPostR
+    kind: block
+    material: wood
+    hp: 1
+    sprite: { key: plank_h, path: /assets/angrycat/Sprites/single_brown_wooden_plank_hori/single_brown_wooden_plank_hori_tight.png }
+    x: 640
+    y: 551
+    scale: 0.20
+    origin: [0.5, 0.5]
+    rotation: 1.5708
+    depth: 3
+
+  # Cap seated on post tops (452.7) with ~17px overlap → zero float.
+  - name: WoodCap
+    kind: block
+    material: wood
+    hp: 1
+    sprite: { key: plank_h, path: /assets/angrycat/Sprites/single_brown_wooden_plank_hori/single_brown_wooden_plank_hori_tight.png }
+    x: 610
+    y: 470
+    scale: 0.12
+    origin: [0.5, 1.0]
+    depth: 6
+
+  - name: King
+    kind: enemy
+    sprite: { key: mouse, path: /assets/angrycat/Sprites/mouse_blink_2frame/mouse_blink_2frame.png, framesX: 2 }
+    x: 595
+    y: 650
+    scale: 0.16
+    origin: [0.5, 0.92]
+    flipX: true
+    hp: 1
+    destroyOnHit: true
+    isKing: true
+    scoreOnDestroy: 500
+    scaredKey: mouse_scared
+    scaredPath: /assets/angrycat/Sprites/mouse_scared_v2/mouse_scared_v2.png
+    defeatedKey: mouse_defeated
+    defeatedPath: /assets/angrycat/Sprites/mouse_defeated_v2/mouse_defeated_v2.png
+    depth: 6
+
+  - name: Guard
+    kind: enemy
+    sprite: { key: mouse, path: /assets/angrycat/Sprites/mouse_blink_2frame/mouse_blink_2frame.png, framesX: 2 }
+    x: 610
+    y: 650
+    scale: 0.11
+    origin: [0.5, 0.92]
+    flipX: true
+    hp: 1
+    destroyOnHit: true
+    scoreOnDestroy: 150
+    scaredKey: mouse_scared
+    scaredPath: /assets/angrycat/Sprites/mouse_scared_v2/mouse_scared_v2.png
+    defeatedKey: mouse_defeated
+    defeatedPath: /assets/angrycat/Sprites/mouse_defeated_v2/mouse_defeated_v2.png
+    depth: 5
+
+  # Stone back-wall hugging the keep's right edge (integrated, not a lone pillar).
+  - name: StoneWall
+    kind: block
+    material: stone
+    sprite: { key: stone_beam, path: /assets/angrycat/Sprites/single_grey_stone_beam_horizon/single_grey_stone_beam_horizon_tight.png }
+    x: 680
+    y: 550
+    scale: 0.20
+    origin: [0.5, 0.5]
+    rotation: 1.5708
+    depth: 2
+
+slingshot:
+  anchor: Slingshot
+  projectile: CatBlack
+  pouchOffset: [0, -159]
+  maxPullDistance: 280
+  launchPowerScale: 5.0
+  cats:
+    - name: CatBlack
+      label: "Czarny"
+      ability: heavy
+      flyingSpriteKey: cat_black_flying
+      flyingSpritePath: /assets/angrycat/Sprites/cat_black_flying_attack_v3/cat_black_flying_attack_v3.png
+      haloColor: "#888888"
+    - name: CatYellow
+      label: "Żółty (przenika drewno)"
+      ability: fast
+      flyingSpriteKey: cat_yellow_flying
+      flyingSpritePath: /assets/angrycat/Sprites/cat_yellow_flying_v2/cat_yellow_flying_single.png
+      haloColor: "#ffd84a"
+      phaseThrough: [GlassRoof, WoodPostL, WoodPostR, WoodCap]
+    - name: CatPatched
+      label: "Łaciaty (×3)"
+      ability: light
+      flyingSpriteKey: cat_patched_flying
+      flyingSpritePath: /assets/angrycat/Sprites/cat_patched_hit_v2/cat_patched_loaded_single.png
+      hitSpriteKey: cat_patched_hit
+      hitSpritePath: /assets/angrycat/Sprites/cat_patched_hit_v2/cat_patched_hit_single.png
+      haloColor: "#f0a878"
+      splitInto: 3
+      splitDelayMs: 300
+      splitSpreadX: 220
+
+win:
+  type: all_targets_destroyed
+
+lose:
+  type: no_shots_left
+  shots: 3
