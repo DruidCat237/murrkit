@@ -11,6 +11,9 @@ export default defineConfig({
     port: 5173,
     host: "127.0.0.1",
     strictPort: false,
+    watch: {
+      ignored: ["**/._*", "**/.DS_Store", "**/test-results/**", "**/playwright-report/**"],
+    },
     fs: {
       allow: [
         resolve(__dirname),

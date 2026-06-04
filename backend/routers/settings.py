@@ -7,7 +7,7 @@ Endpoints:
     POST  /api/config/test/kitty        — ping Kitty App backend with a tiny prompt
     POST  /api/config/test/deepseek     — ping DeepSeek with a 4-token prompt
     POST  /api/config/test/elevenlabs   — ping ElevenLabs voices endpoint
-    POST  /api/config/test/anthropic    — invoke `claude --version`
+    POST  /api/config/test/anthropic    — invoke configured local agent CLI `--version`
     POST  /api/config/test/unity_mcp    — ping http://127.0.0.1:8080 or stdio probe
     POST  /api/config/reload            — best-effort: instruct uvicorn worker to
                                           reload (returns hint to user)
@@ -19,12 +19,10 @@ import os
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
-from loguru import logger
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core.config import PROJECT_ROOT, settings
@@ -49,7 +47,15 @@ _SAFE_KEY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "GEMINI_API_KEY":      {"label": "Google Gemini API Key", "kind": "secret", "default": ""},
     "GEMINI_MODEL":        {"label": "Gemini Model", "kind": "plain", "default": "gemini-3.5-flash"},
     "ELEVENLABS_API_KEY":  {"label": "ElevenLabs API Key", "kind": "secret", "default": ""},
-    "ANTHROPIC_API_KEY":   {"label": "Anthropic API Key (optional — CLI uses subscription if blank)", "kind": "secret", "default": ""},
+    "MURRKIT_AGENT_CLI":   {"label": "Local agent CLI", "kind": "plain", "default": "claude"},
+    "CODEX_CLI_BIN":       {"label": "Codex CLI binary", "kind": "plain", "default": "codex"},
+    "CODEX_MODEL":         {"label": "Codex default model (optional)", "kind": "plain", "default": ""},
+    "CODEX_MODEL_FAST":    {"label": "Codex balanced model (optional)", "kind": "plain", "default": ""},
+    "CODEX_MODEL_HEAVY":   {"label": "Codex heavy model (optional)", "kind": "plain", "default": ""},
+    "CODEX_SANDBOX":       {"label": "Codex sandbox", "kind": "plain", "default": "workspace-write"},
+    "CODEX_APPROVAL_POLICY": {"label": "Codex approval policy", "kind": "plain", "default": "never"},
+    "CLAUDE_CLI_BIN":      {"label": "Claude CLI binary (optional fallback)", "kind": "plain", "default": "claude"},
+    "ANTHROPIC_API_KEY":   {"label": "Anthropic API Key (only when MURRKIT_AGENT_CLI=claude)", "kind": "secret", "default": ""},
     "UNITY_PROJECT_PATH":  {"label": "Game Project Path", "kind": "path", "default": ""},
     "UNITY_MCP_SERVER":    {"label": "Engine-MCP Server Script Path (stdio)", "kind": "path", "default": ""},
     "UNITY_MCP_HTTP_URL":  {"label": "Engine-MCP HTTP URL (alt transport)", "kind": "plain", "default": DEFAULT_UNITY_MCP_HTTP_URL},
@@ -394,7 +400,7 @@ async def test_elevenlabs() -> TestResult:
 
 @router.post("/test/anthropic", response_model=TestResult)
 async def test_anthropic() -> TestResult:
-    """Check Claude CLI presence + version.
+    """Check configured local agent CLI presence + version.
 
     Uses `asyncio.to_thread(subprocess.run, ...)` rather than
     `asyncio.create_subprocess_exec` because the latter requires
@@ -404,23 +410,46 @@ async def test_anthropic() -> TestResult:
     """
     import asyncio
     t0 = time.time()
-    cli = shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd")
-    # Fall back to the well-known user-local install location on Windows.
-    if cli is None:
-        for guess in (
+
+    env = _read_env_file()
+    agent = (env.get("MURRKIT_AGENT_CLI") or settings.agent_cli or "claude").strip().lower()
+    if agent not in {"codex", "claude"}:
+        agent = "claude"
+
+    if agent == "claude":
+        configured_bin = env.get("CLAUDE_CLI_BIN") or settings.claude_cli_bin or "claude"
+        fallback_paths = (
             os.path.expanduser(r"~\.local\bin\claude.exe"),
             os.path.expanduser(r"~\.local\bin\claude.cmd"),
             os.path.expanduser(r"~\AppData\Local\claude\claude.exe"),
-        ):
+        )
+    else:
+        configured_bin = env.get("CODEX_CLI_BIN") or settings.codex_cli_bin or "codex"
+        fallback_paths = (
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "/usr/local/bin/codex",
+            "/opt/homebrew/bin/codex",
+        )
+
+    cli = None
+    if os.path.sep in configured_bin or (os.path.altsep and os.path.altsep in configured_bin):
+        expanded = os.path.expanduser(configured_bin)
+        if os.path.isfile(expanded):
+            cli = expanded
+    if cli is None:
+        cli = shutil.which(configured_bin)
+    if cli is None:
+        for guess in fallback_paths:
             if os.path.isfile(guess):
                 cli = guess
                 break
     if cli is None:
+        label = "Claude" if agent == "claude" else "Codex"
         return TestResult(
             ok=False,
-            detail="`claude` CLI not on PATH — install from https://docs.claude.com/en/docs/claude-code/quickstart",
+            detail=f"`{configured_bin}` CLI not found — configure {label} CLI before running murrkit",
             elapsed_ms=0,
-            extra={},
+            extra={"agent": agent},
         )
     try:
         result = await asyncio.to_thread(
@@ -432,30 +461,39 @@ async def test_anthropic() -> TestResult:
         )
         elapsed = int((time.time() - t0) * 1000)
         out = (result.stdout or result.stderr or b"").decode("utf-8", errors="replace").strip()[:200]
-        auth_mode = "API ($ANTHROPIC_API_KEY)" if os.environ.get("ANTHROPIC_API_KEY") else "subscription (Pro/Max)"
+        auth_mode = "subscription (Pro/Max)"
+        if agent == "claude" and (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
+            auth_mode = "API ($ANTHROPIC_API_KEY)"
+        elif agent == "codex":
+            auth_mode = "Codex login"
         version = out.split()[-1] if out else "?"
         return TestResult(
             ok=result.returncode == 0,
-            detail=f"claude CLI {version} | auth={auth_mode}",
+            detail=f"{agent} CLI {version} | auth={auth_mode}",
             elapsed_ms=elapsed,
             extra={
                 "cli_path": cli,
                 "version": version,
-                "mode": "api" if os.environ.get("ANTHROPIC_API_KEY") else "subscription",
+                "agent": agent,
+                "mode": (
+                    "api"
+                    if agent == "claude" and (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+                    else "subscription"
+                ),
                 "raw_output": out,
             },
         )
     except subprocess.TimeoutExpired:
         return TestResult(
             ok=False,
-            detail=f"Claude CLI at {cli} timed out after 8s",
+            detail=f"{agent} CLI at {cli} timed out after 8s",
             elapsed_ms=int((time.time() - t0) * 1000),
             extra={"cli_path": cli},
         )
     except Exception as e:  # noqa: BLE001
         return TestResult(
             ok=False,
-            detail=f"Claude CLI error: {type(e).__name__}: {e!s}" if str(e) else f"Claude CLI error: {type(e).__name__} (empty message)",
+            detail=f"{agent} CLI error: {type(e).__name__}: {e!s}" if str(e) else f"{agent} CLI error: {type(e).__name__} (empty message)",
             elapsed_ms=int((time.time() - t0) * 1000),
             extra={"cli_path": cli},
         )

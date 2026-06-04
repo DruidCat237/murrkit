@@ -53,8 +53,18 @@ const SECTIONS: { title: string; keys: string[] }[] = [
     keys: ["ELEVENLABS_API_KEY"],
   },
   {
-    title: "Anthropic Claude (CLI orchestrator)",
-    keys: ["ANTHROPIC_API_KEY"],
+    title: "Local agent CLI",
+    keys: [
+      "MURRKIT_AGENT_CLI",
+      "CODEX_CLI_BIN",
+      "CODEX_MODEL",
+      "CODEX_MODEL_FAST",
+      "CODEX_MODEL_HEAVY",
+      "CODEX_SANDBOX",
+      "CODEX_APPROVAL_POLICY",
+      "CLAUDE_CLI_BIN",
+      "ANTHROPIC_API_KEY",
+    ],
   },
   {
     title: "Budget & Backend",
@@ -212,7 +222,7 @@ export default function SettingsPanel() {
         </div>
       </div>
 
-      {/* Claude Code — dedicated section (richer than just API key field) */}
+      {/* Local agent — dedicated section */}
       <ClaudeCodeConfig />
 
       {/* Sections */}
@@ -344,7 +354,7 @@ function sectionTestKey(title: string): TestKey | null {
   if (title.includes("Kitty")) return "kitty";
   if (title.includes("DeepSeek")) return "deepseek";
   if (title.includes("ElevenLabs")) return "elevenlabs";
-  if (title.includes("Claude") || title.includes("Anthropic")) return "anthropic";
+  if (title.includes("agent") || title.includes("Codex") || title.includes("Claude") || title.includes("Anthropic")) return "anthropic";
   return null;
 }
 

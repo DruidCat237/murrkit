@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * ClaudeCodeConfig — dedicated Claude Code configuration panel.
+ * ClaudeCodeConfig — dedicated local agent configuration panel.
  *
- * Shows everything user needs to understand and tweak Claude CLI behavior:
+ * Shows everything user needs to understand and tweak Codex/Claude CLI behavior:
  *   - CLI status (path, version, subscription vs API mode)
  *   - Permission mode (bypassPermissions badge)
- *   - Default model (Sonnet/Opus selector — persisted)
- *   - Settings files (.claude/settings.local.json, CLAUDE.md) — open in OS editor
+ *   - Default model route selector — persisted
+ *   - Settings files (.env, CLAUDE.md) — open in OS editor
  *   - Skills counter (project + global)
  *   - Working directory
  *
@@ -19,10 +19,11 @@ import {
   Brain, CheckCircle2, XCircle, FileText, ExternalLink, RefreshCw,
   Shield, FolderOpen, Cpu, Sparkles,
 } from "lucide-react";
-import { BACKEND, testEndpoint } from "@/lib/api";
+import { BACKEND, testEndpoint, updateConfig } from "@/lib/api";
 
 interface ClaudeStatus {
   ok: boolean;
+  agent?: "codex" | "claude";
   cli_path?: string;
   version?: string;
   mode?: "subscription" | "api";
@@ -54,6 +55,7 @@ export default function ClaudeCodeConfig() {
       if (anthropic) {
         setStatus({
           ok: anthropic.ok,
+          agent: anthropic.extra?.agent as "codex" | "claude" | undefined,
           cli_path: anthropic.extra?.cli_path as string | undefined,
           version: anthropic.extra?.version as string | undefined,
           mode: (anthropic.extra?.mode as "subscription" | "api" | undefined) ?? "subscription",
@@ -80,12 +82,26 @@ export default function ClaudeCodeConfig() {
     window.dispatchEvent(new CustomEvent("chat:default-model", { detail: m }));
   }
 
+  async function setAgent(agent: "claude" | "codex") {
+    setBusy(true);
+    try {
+      await updateConfig({ MURRKIT_AGENT_CLI: agent }).catch(() => null);
+      window.dispatchEvent(new CustomEvent("murrkit:agent-cli-changed", { detail: { agent } }));
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const agent = status?.agent ?? "claude";
+  const isCodex = agent === "codex";
+
   return (
     <div className="panel">
       <div className="panel-header flex items-center justify-between">
         <span className="flex items-center gap-2">
           <Brain className="h-4 w-4 text-accent" />
-          Claude Code
+          Local Agent
         </span>
         <button
           onClick={refresh}
@@ -98,6 +114,32 @@ export default function ClaudeCodeConfig() {
       </div>
 
       <div className="p-3 space-y-3">
+        <div>
+          <div className="text-xs text-text-dim mb-1.5 flex items-center gap-1.5">
+            <Brain className="h-3 w-3" /> Local agent runtime
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {([
+              { id: "claude", label: "Claude Code", desc: "Original upstream route" },
+              { id: "codex", label: "Codex CLI", desc: "Optional local route" },
+            ] as const).map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setAgent(option.id)}
+                disabled={busy}
+                className={`text-left px-2.5 py-2 rounded border transition-colors ${
+                  agent === option.id
+                    ? "border-accent bg-accent/10 text-text"
+                    : "border-line bg-bg hover:bg-bg-subtle text-text-dim"
+                }`}
+              >
+                <div className="text-xs font-semibold">{option.label}</div>
+                <div className="text-[9px] text-text-subtle mt-0.5">{option.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* === CLI Status === */}
         <div className="grid grid-cols-2 gap-3">
           <StatusCard
@@ -110,9 +152,9 @@ export default function ClaudeCodeConfig() {
           <StatusCard
             icon={<Shield className="h-3.5 w-3.5" />}
             label="Mode"
-            value={status?.mode === "api" ? "API key" : "Subscription"}
+            value={!isCodex ? (status?.mode === "api" ? "API key" : "Subscription") : "Codex login"}
             ok={true}
-            hint={status?.mode === "subscription" ? "$0 per call" : "Pay-per-token"}
+            hint={!isCodex ? (status?.mode === "subscription" ? "$0 per call" : "Pay-per-token") : "Uses local Codex auth"}
           />
           <StatusCard
             icon={<Sparkles className="h-3.5 w-3.5" />}
@@ -130,12 +172,13 @@ export default function ClaudeCodeConfig() {
               <Shield className="h-3 w-3" /> Permission mode
             </span>
             <span className="px-2 py-0.5 rounded-full bg-accent/20 text-accent text-[10px] font-mono font-semibold">
-              bypassPermissions
+              {isCodex ? "workspace-write / never" : "bypassPermissions"}
             </span>
           </div>
           <p className="text-[10px] text-text-subtle mt-1.5">
-            Claude never asks for confirmation — fully autonomous. Configured in{" "}
-            <code className="font-mono text-[9px]">.claude/settings.local.json</code>.
+            {isCodex
+              ? "Codex runs inside the project with workspace-write sandboxing and no nested approval prompts by default."
+              : "Claude Code uses the original bypassPermissions mode and the project Playwright MCP config."}
           </p>
         </div>
 
@@ -146,8 +189,16 @@ export default function ClaudeCodeConfig() {
           </div>
           <div className="grid grid-cols-3 gap-2">
             {([
-              { id: "claude_sonnet", label: "Sonnet 4.7", desc: "Balanced — default" },
-              { id: "claude_opus", label: "Opus 4.8", desc: "Most powerful" },
+              {
+                id: "claude_sonnet",
+                label: isCodex ? "Codex Balanced" : "Sonnet",
+                desc: isCodex ? "Fast Codex route" : "Fast Claude route",
+              },
+              {
+                id: "claude_opus",
+                label: isCodex ? "Codex Heavy" : "Opus",
+                desc: isCodex ? "Heavy Codex route" : "Most capable Claude route",
+              },
               { id: "deepseek_v4", label: "DeepSeek V4", desc: "Cheap fallback" },
             ] as const).map((m) => (
               <button
@@ -175,12 +226,12 @@ export default function ClaudeCodeConfig() {
             <FileRow
               label="CLAUDE.md"
               path="CLAUDE.md"
-              desc="Auto-loaded project context (skills, conventions, API surface)"
+              desc="Project guide injected into the local captain prompt"
             />
             <FileRow
-              label="settings.local.json"
-              path=".claude/settings.local.json"
-              desc="Permission mode + tool whitelist"
+              label=".env"
+              path=".env"
+              desc="Agent CLI, provider keys, ports, and budget"
             />
             <FileRow
               label="Skills directory"
@@ -190,7 +241,7 @@ export default function ClaudeCodeConfig() {
             <FileRow
               label="Working directory"
               path="."
-              desc="Claude CLI cwd for all subprocesses"
+              desc="Local agent CLI cwd for all subprocesses"
               icon={<FolderOpen className="h-3 w-3" />}
             />
           </div>

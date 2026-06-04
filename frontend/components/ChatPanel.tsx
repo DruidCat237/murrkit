@@ -43,6 +43,7 @@ import {
 import {
   abortChatTask,
   clearChatHistory,
+  getConfig,
   getCostSnapshot,
   listSkills,
   loadChatHistory,
@@ -71,9 +72,20 @@ type Msg = {
 
 const MODEL_OPTIONS: { value: ChatModel; label: string; hint: string; tint: string }[] = [
   { value: "deepseek_v4",   label: "DeepSeek V4 Flash",  hint: "cheap, $/M",    tint: "text-blue-400" },
-  { value: "claude_sonnet", label: "Claude Sonnet 4.7",  hint: "fast / cheap",    tint: "text-accent" },
-  { value: "claude_opus",   label: "Claude Opus 4.8",    hint: "default orchestrator", tint: "text-accent-hot" },
+  { value: "claude_sonnet", label: "Claude Sonnet",  hint: "fast default route",    tint: "text-accent" },
+  { value: "claude_opus",   label: "Claude Opus",    hint: "default orchestrator", tint: "text-accent-hot" },
 ];
+
+function modelOptionsForAgent(agentCli: "claude" | "codex") {
+  if (agentCli === "codex") {
+    return MODEL_OPTIONS.map((opt) => {
+      if (opt.value === "claude_sonnet") return { ...opt, label: "Codex Balanced", hint: "fast Codex route" };
+      if (opt.value === "claude_opus") return { ...opt, label: "Codex Heavy", hint: "heavy Codex route" };
+      return opt;
+    });
+  }
+  return MODEL_OPTIONS;
+}
 
 export default function ChatPanel({
   projectName = "default",
@@ -87,6 +99,7 @@ export default function ChatPanel({
   const [files, setFiles] = useState<File[]>([]);
   const [filePreviews, setFilePreviews] = useState<string[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [agentCli, setAgentCli] = useState<"claude" | "codex">("claude");
   const [model, setModel] = useState<ChatModel>("claude_opus");
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillPrefix, setSkillPrefix] = useState<string | null>(null);
@@ -100,7 +113,7 @@ export default function ChatPanel({
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Stick-to-bottom: only auto-scroll while the user is ALREADY near the bottom.
-  // If they scroll UP to read what Claude is doing, we leave them there (and show
+  // If they scroll UP to read what Codex is doing, we leave them there (and show
   // a "↓ Latest" jump button) instead of yanking them back down on every streamed
   // token. Fixes "chat zawsze zwija mi się sam na dół i nie mogę poczytać".
   const stickToBottomRef = useRef(true);
@@ -120,6 +133,28 @@ export default function ChatPanel({
   // `loadedProjectRef` gates the save effect so switching projects doesn't
   // write the previous project's messages under the new project's key.
   const loadedProjectRef = useRef<string>("");
+  const modelOptions = useMemo(() => modelOptionsForAgent(agentCli), [agentCli]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshAgentCli() {
+      const cfg = await getConfig().catch(() => null);
+      if (cancelled || !cfg) return;
+      const field = cfg.fields.find((f) => f.key === "MURRKIT_AGENT_CLI");
+      setAgentCli(field?.value === "codex" ? "codex" : "claude");
+    }
+    refreshAgentCli();
+    function onAgentChanged(e: Event) {
+      const detail = (e as CustomEvent).detail as { agent?: "claude" | "codex" };
+      if (detail?.agent === "claude" || detail?.agent === "codex") setAgentCli(detail.agent);
+      else refreshAgentCli();
+    }
+    window.addEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    };
+  }, []);
 
   // ---- Restore from local cache instantly, then reconcile with backend ----
   // On mount / project change: show the cached chat immediately (so a remount
@@ -598,7 +633,7 @@ export default function ChatPanel({
           {/* CLAUDE.md context indicator */}
           <span
             className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/30 text-accent flex items-center gap-1"
-            title="CLAUDE.md auto-loaded by Claude CLI (claude_sonnet / claude_opus models)"
+            title="CLAUDE.md is injected into the Codex captain prompt"
           >
             <CornerDownRight className="h-2 w-2" />
             CLAUDE.md
@@ -655,7 +690,7 @@ export default function ChatPanel({
           </span>
           <div className="flex-1 min-w-0">
             <div className="text-xs font-semibold text-accent">
-              {(MODEL_OPTIONS.find((o) => o.value === model)?.label) ?? model} is working…
+              {(modelOptions.find((o) => o.value === model)?.label) ?? model} is working…
             </div>
             <div className="text-[10px] text-text-dim tabular-nums">
               {elapsedSec}s · {liveBufferRef.current.length} steps so far
@@ -674,7 +709,7 @@ export default function ChatPanel({
       )}
 
       {/* Asset plan — shows planned/generating/done sprites + assets that
-          Claude is creating, so the user has a clear picture of what's being
+          the captain is creating, so the user has a clear picture of what's being
           built and can see thumbnails as they land. */}
       {assetEvents.length > 0 && (
         <AssetPlanPanel events={assetEvents} />
@@ -737,7 +772,7 @@ export default function ChatPanel({
       {/* Model + skill row */}
       <div className="border-t border-line px-3 py-1.5 flex items-center gap-2 flex-wrap text-[10px]">
         <span className="text-text-dim">Model:</span>
-        {MODEL_OPTIONS.map((opt) => (
+        {modelOptions.map((opt) => (
           <button
             key={opt.value}
             onClick={() => setModel(opt.value)}
@@ -749,7 +784,7 @@ export default function ChatPanel({
             ].join(" ")}
             title={opt.hint}
           >
-            {opt.label.replace("Claude ", "").replace("DeepSeek V4 ", "DS-")}
+            {opt.label.replace("DeepSeek V4 ", "DS-")}
           </button>
         ))}
         <span className="text-text-dim mx-2">·</span>
@@ -1080,7 +1115,7 @@ function MessageBubbleBase({ msg, compact, isLast }: { msg: Msg; compact: boolea
           </div>
         )}
 
-        {/* Completed-turn meta — Claude-Code-style token + cost readout */}
+        {/* Completed-turn meta — token + cost readout */}
         {msg.role === "agent" && !isLast && (msg.tokens || (msg.cost ?? 0) > 0) && (
           <div className="text-[9px] text-text-subtle flex items-center gap-1.5 mt-0.5 flex-wrap">
             {msg.tokens && (msg.tokens.in > 0 || msg.tokens.out > 0) && (
@@ -1460,7 +1495,7 @@ function EmptyStateHint() {
       <h2 className="text-2xl font-semibold mb-2">Hi! What do we build today?</h2>
       <p className="text-text-dim text-sm mb-6">
         Pick a quick action below, or just describe your game idea.
-        Claude orchestrates sprites, scenes, scripts, and animations.
+        The selected captain orchestrates sprites, scenes, scripts, and animations.
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-8 text-left">
@@ -1594,7 +1629,7 @@ function SkillPicker({
 }
 
 // ---------------------------------------------------------------------------
-// Asset plan tracking — derived from Claude CLI tool_use / tool_result events.
+// Asset plan tracking — derived from local agent CLI tool_use / tool_result events.
 // ---------------------------------------------------------------------------
 
 interface AssetEvent {

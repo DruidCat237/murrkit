@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys as _sys
 import threading
 from pathlib import Path
 
@@ -57,6 +58,22 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
+
+    # ---- Local coding agent ------------------------------------------------
+    # Claude Code remains the upstream default. The first-run setup can set
+    # MURRKIT_AGENT_CLI=codex to run the same murrkit captain prompt through
+    # Codex CLI instead.
+    agent_cli: str = Field(default="claude", validation_alias=AliasChoices("MURRKIT_AGENT_CLI"))
+    codex_cli_bin: str = Field(default="codex", validation_alias=AliasChoices("CODEX_CLI_BIN"))
+    codex_model: str = Field(default="", validation_alias=AliasChoices("CODEX_MODEL"))
+    codex_model_fast: str = Field(default="", validation_alias=AliasChoices("CODEX_MODEL_FAST"))
+    codex_model_heavy: str = Field(default="", validation_alias=AliasChoices("CODEX_MODEL_HEAVY"))
+    codex_sandbox: str = Field(default="workspace-write", validation_alias=AliasChoices("CODEX_SANDBOX"))
+    codex_approval_policy: str = Field(
+        default="never",
+        validation_alias=AliasChoices("CODEX_APPROVAL_POLICY"),
+    )
+    claude_cli_bin: str = Field(default="claude", validation_alias=AliasChoices("CLAUDE_CLI_BIN"))
 
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.5-flash"
@@ -196,8 +213,6 @@ budget = BudgetGuard(limit_usd=settings.budget_limit_usd)
 
 
 # Configure logger early ------------------------------------------------------
-import sys as _sys
-
 # Force UTF-8 stdout/stderr on Windows
 if hasattr(_sys.stdout, "reconfigure"):
     try:

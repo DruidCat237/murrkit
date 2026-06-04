@@ -41,6 +41,7 @@ frontend/.turbo/
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Secrets — never commit

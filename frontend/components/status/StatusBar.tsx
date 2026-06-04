@@ -5,15 +5,37 @@ import { Clock, Cpu, DollarSign, RefreshCcw, Activity, LayoutGrid, Bug, Gamepad2
 import { useSession } from "@/store/session";
 import { useQueue } from "@/store/queue";
 import { useLayout } from "@/store/layout";
-import { BACKEND } from "@/lib/api";
+import { BACKEND, getConfig } from "@/lib/api";
 
 export default function StatusBar() {
   const cost = useSession((s) => s.costSnapshot);
   const ctx = useSession((s) => s.context);
   const activeModel = useSession((s) => s.activeModel);
+  const [agentCli, setAgentCli] = useState<"claude" | "codex">("claude");
 
   // Phaser dev-server (Vite :5173) health — replaces the old engine offline pill.
   const [phaserHealthy, setPhaserHealthy] = useState<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshAgentCli() {
+      const cfg = await getConfig().catch(() => null);
+      if (cancelled || !cfg) return;
+      const field = cfg.fields.find((f) => f.key === "MURRKIT_AGENT_CLI");
+      setAgentCli(field?.value === "codex" ? "codex" : "claude");
+    }
+    refreshAgentCli();
+    function onAgentChanged(e: Event) {
+      const detail = (e as CustomEvent).detail as { agent?: "claude" | "codex" };
+      if (detail?.agent === "claude" || detail?.agent === "codex") setAgentCli(detail.agent);
+      else refreshAgentCli();
+    }
+    window.addEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    };
+  }, []);
+
   useEffect(() => {
     const probe = async () => {
       try {
@@ -66,7 +88,7 @@ export default function StatusBar() {
 
       <div className="status-segment" title="Active model">
         <Cpu className="h-3 w-3" />
-        <span>{modelLabel(activeModel)}</span>
+        <span>{modelLabel(activeModel, agentCli)}</span>
       </div>
 
       <button
@@ -130,9 +152,9 @@ export default function StatusBar() {
   );
 }
 
-function modelLabel(m: string): string {
-  if (m === "claude_opus") return "Opus 4.8";
-  if (m === "claude_sonnet") return "Sonnet 4.7";
+function modelLabel(m: string, agentCli: "claude" | "codex"): string {
+  if (m === "claude_opus") return agentCli === "codex" ? "Codex Heavy" : "Opus 4.8";
+  if (m === "claude_sonnet") return agentCli === "codex" ? "Codex Balanced" : "Sonnet";
   if (m === "deepseek_v4") return "DeepSeek V4";
   return m;
 }

@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { Cpu } from "lucide-react";
 import type { ChatModel } from "@/lib/types";
 import { useSession } from "@/store/session";
+import { getConfig } from "@/lib/api";
 
 const OPTIONS: { value: ChatModel; label: string; hint: string }[] = [
   { value: "deepseek_v4", label: "DeepSeek", hint: "Cheapest · log triage" },
@@ -22,12 +23,45 @@ const OPTIONS: { value: ChatModel; label: string; hint: string }[] = [
   { value: "claude_opus", label: "Opus", hint: "Default · best reasoning" },
 ];
 
+function optionsForAgent(agentCli: "claude" | "codex") {
+  if (agentCli === "codex") {
+    return OPTIONS.map((opt) => {
+      if (opt.value === "claude_sonnet") return { ...opt, label: "Codex Balanced" };
+      if (opt.value === "claude_opus") return { ...opt, label: "Codex Heavy" };
+      return opt;
+    });
+  }
+  return OPTIONS;
+}
+
 export default function ModelPicker({ className = "" }: { className?: string }) {
   const activeModel = useSession((s) => s.activeModel);
   const setActiveModel = useSession((s) => s.setActiveModel);
   // Local mirror so the control reflects ChatPanel's source of truth even
   // before the session store is hydrated.
   const [model, setModel] = useState<ChatModel>(activeModel);
+  const [agentCli, setAgentCli] = useState<"claude" | "codex">("claude");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshAgentCli() {
+      const cfg = await getConfig().catch(() => null);
+      if (cancelled || !cfg) return;
+      const field = cfg.fields.find((f) => f.key === "MURRKIT_AGENT_CLI");
+      setAgentCli(field?.value === "codex" ? "codex" : "claude");
+    }
+    refreshAgentCli();
+    function onAgentChanged(e: Event) {
+      const detail = (e as CustomEvent).detail as { agent?: "claude" | "codex" };
+      if (detail?.agent === "claude" || detail?.agent === "codex") setAgentCli(detail.agent);
+      else refreshAgentCli();
+    }
+    window.addEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("murrkit:agent-cli-changed", onAgentChanged);
+    };
+  }, []);
 
   useEffect(() => {
     function onChanged(e: Event) {
@@ -55,7 +89,7 @@ export default function ModelPicker({ className = "" }: { className?: string }) 
         aria-label="Chat model"
         className="flex items-center rounded-lg border border-line bg-bg-subtle p-0.5"
       >
-        {OPTIONS.map((opt) => {
+        {optionsForAgent(agentCli).map((opt) => {
           const selected = model === opt.value;
           return (
             <button

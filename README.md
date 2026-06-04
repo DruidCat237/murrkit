@@ -14,7 +14,7 @@ Describe a game in plain language. murrkit's captain *imagines* the full design,
 
 ## What it is
 
-murrkit is a **local web app** (Next.js dashboard + FastAPI backend) that drives a **Claude Code** "captain" to build Phaser games end-to-end:
+murrkit is a **local web app** (Next.js dashboard + FastAPI backend) that drives a local agent "captain" to build Phaser games end-to-end. Claude Code is the original upstream path; Codex CLI can be selected during setup as an optional local-agent runtime.
 
 1. **Imagine** — a vague prompt ("make a Mario-style platformer") is expanded into a full technical design (controls, physics in world units, level beats, AI, win/lose), not just pretty art.
 2. **Generate** — sprite sheets / tilesets / UI are produced through the **Kitty** image API (one token, no per-vendor setup).
@@ -31,10 +31,10 @@ murrkit is the *orchestrator*. It does **not** ship the AI brain or an image mod
 
 | | Service | Why it's required | Cost |
 |---|---|---|---|
-| 1️⃣ | **[Claude Code](https://claude.com/claude-code) CLI** | The "captain" — the agent that actually designs & writes the game. murrkit spawns it locally. | Anthropic subscription **or** API key |
+| 1️⃣ | **Claude Code CLI or Codex CLI** | The "captain" — the agent that actually designs & writes the game. murrkit spawns it locally. | Claude subscription/API key or Codex login |
 | 2️⃣ | **[Kitty](https://druidcat.app/dashboard) API token** | Generates every sprite sheet / tileset / UI image. | Pay-as-you-go credits (cheap; ~$0.04–0.16 / image) |
 
-> **That's the whole minimum: Claude Code + a Kitty token.** Everything else (DeepSeek, Gemini, ElevenLabs) is optional and only sharpens vision-QA / audio.
+> **That's the whole minimum: one local agent CLI + a Kitty token.** Everything else (DeepSeek, Gemini, ElevenLabs) is optional and only sharpens vision-QA / audio.
 
 You don't have to touch `.env` by hand — on first launch the app shows a **Setup screen** that walks you through both. (Manual `.env` is documented below too.)
 
@@ -44,28 +44,35 @@ Also needed on your machine (standard dev tooling):
 
 ---
 
-## 1 · Install & configure Claude Code (the captain)
+## 1 · Install & configure a local agent (the captain)
 
 murrkit can't think without it. One-time setup:
 
+Claude Code, the original upstream route:
+
 ```bash
-# Install the CLI (npm)
 npm install -g @anthropic-ai/claude-code
-
-# Authenticate — opens a browser; sign in with your Anthropic account.
-# A Claude Pro/Max subscription works (no per-call billing), or paste an API key.
-claude            # run once, follow the login prompt, then /exit
+claude        # sign in, then /exit
 ```
 
-Verify it's on your PATH (murrkit calls the `claude` binary directly):
+Codex CLI, optional:
 
 ```bash
-claude --version
+# Verify the Codex CLI is available
+codex --version
+
+# Authenticate if needed
+codex login
 ```
 
-murrkit auto-detects the binary and shows its status (Installed / Subscription vs API) in **Settings → Claude Code**. If `claude` isn't found, the Setup screen tells you.
+Pick one in the first-run Setup screen, or set it manually:
 
-> 💡 No Anthropic account? Claude Code requires one — there is no built-in fallback brain. It is the single non-negotiable dependency.
+```bash
+# .env
+MURRKIT_AGENT_CLI=claude   # or: codex
+```
+
+murrkit auto-detects the selected binary and shows its status in **Settings → Local Agent**.
 
 ---
 
@@ -120,10 +127,10 @@ cd phaser_game && npm run dev        # → http://localhost:5173
 
 Then open **http://localhost:3001**.
 
-- **First launch** → the **Setup screen** appears. Add your Claude Code status + Kitty token (and optional keys). Once the minimum is green, you're in.
+- **First launch** → the **Setup screen** appears. Choose Claude Code or Codex CLI, confirm the selected CLI status, then add your Kitty token. Once the minimum is green, you're in.
 - Type the game you want in **Chat**. The captain replies with a one-screen **design doc** ending in `Reply APPROVE to build`. Approve it once — then it generates art, writes scenes, playtests and iterates on its own.
 
-> 💡 **Pro tip — double control with Chrome MCP.** If you run Claude Code with the **Chrome MCP** connector, you can just ask Claude: *"launch murrkit in Chrome and show me the dashboard."* Claude opens the real app in a browser, screenshots it, reads the console, and clicks around — so **you and Claude are both watching the same running app**. Great for catching visual bugs the headless playtest misses.
+> **Pro tip — double control.** Use the browser/playtest tooling with your selected captain, then ask it: *"launch murrkit in Chrome and show me the dashboard."* The same murrkit imagination, asset, and verification rules apply to both Claude Code and Codex.
 
 ---
 
@@ -134,12 +141,15 @@ Everything lives in `.env` (copied from `.env.example`, never committed). You ca
 | Key | What | Required? | Where to get it |
 |-----|------|-----------|-----------------|
 | `KITTY_APP_TOKEN` | Image generation (sprite sheets, tilesets, UI) | ✅ **yes** | [druidcat.app/dashboard](https://druidcat.app/dashboard) |
+| `MURRKIT_AGENT_CLI` | Local captain runtime: `claude` or `codex` | default `claude` | Setup screen |
+| `CLAUDE_CLI_BIN` | Claude Code binary path/name | optional | default `claude` |
+| `CODEX_CLI_BIN` | Codex CLI binary path/name | optional | default `codex` |
 | `DEEPSEEK_API_KEY` | Cheap code reasoning + log triage | optional | [platform.deepseek.com](https://platform.deepseek.com) |
 | `GEMINI_API_KEY` | Vision QA / compare-to-reference gate | optional | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
 | `ELEVENLABS_API_KEY` | Sound effects / music | optional | [elevenlabs.io](https://elevenlabs.io) |
 | `BUDGET_LIMIT_USD` | Hard stop on cumulative spend | default `80` | — |
 
-> Claude Code is **not** an `.env` key — it's a separately-installed CLI (step 1). murrkit detects it automatically.
+> The captain is **not** an API key in `.env` — it is a separately-installed/authenticated local CLI (step 1). murrkit detects the selected runtime automatically.
 
 ---
 
@@ -164,7 +174,7 @@ The engine ships with small example scenes (slingshot, RPG demo). The flagship d
 |------|------|------|
 | Dashboard (web UI) | Next.js 15 + Tailwind | `3001` |
 | Backend / orchestrator | FastAPI + WebSocket (Python 3.13) | `8001` |
-| Captain | **Claude Code CLI** (you provide) | — |
+| Captain | **Claude Code CLI or Codex CLI** (you provide) | — |
 | Game runtime | **Phaser 3.85 + TypeScript + Vite** | `5173` |
 | Headless playtest | **Playwright** | — |
 | Vision QA · log triage | Gemini · DeepSeek (optional keys) | — |

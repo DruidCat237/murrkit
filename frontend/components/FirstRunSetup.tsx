@@ -15,11 +15,42 @@ import {
 import { getConfig, testEndpoint, updateConfig } from "@/lib/api";
 import { useSession } from "@/store/session";
 
+type AgentCli = "claude" | "codex";
+
+const AGENT_COPY: Record<AgentCli, {
+  title: string;
+  binary: string;
+  body: string;
+  commands: string;
+  docsHref: string;
+  docsLabel: string;
+  modeLabel: string;
+}> = {
+  claude: {
+    title: "Claude Code CLI — the captain",
+    binary: "claude",
+    body: "Install and sign in once. A Claude Pro/Max subscription works, or an Anthropic API key.",
+    commands: "npm install -g @anthropic-ai/claude-code\nclaude        # sign in, then /exit",
+    docsHref: "https://claude.com/claude-code",
+    docsLabel: "Claude Code docs",
+    modeLabel: "Claude Code",
+  },
+  codex: {
+    title: "Codex CLI — the captain",
+    binary: "codex",
+    body: "Open Codex Desktop and sign in once, or use the Codex CLI login flow.",
+    commands: "codex --version\ncodex login   # only if Codex is not signed in yet",
+    docsHref: "https://openai.com/codex/",
+    docsLabel: "Codex docs",
+    modeLabel: "Codex",
+  },
+};
+
 /**
  * FirstRunSetup — one-time guided setup gate (shown over the whole app).
  *
  * Surfaces the BARE MINIMUM to run murrkit and walks the user through it:
- *   1. Claude Code CLI — installed + authenticated (the captain / brain)
+ *   1. Local agent CLI — Claude Code by default, or Codex if selected.
  *   2. A Kitty API token — image generation (paste + verify, saved to .env)
  *
  * Already configured? It probes once and dismisses silently (no nagging).
@@ -33,12 +64,13 @@ export default function FirstRunSetup() {
   const setOnboardingDone = useSession((s) => s.setOnboardingDone);
 
   const [open, setOpen] = useState(false);
-  const [claudeOk, setClaudeOk] = useState<boolean | null>(null);
-  const [claudeDetail, setClaudeDetail] = useState("");
+  const [agentCli, setAgentCli] = useState<AgentCli>("claude");
+  const [agentOk, setAgentOk] = useState<boolean | null>(null);
+  const [agentDetail, setAgentDetail] = useState("");
   const [kittySet, setKittySet] = useState<boolean | null>(null);
   const [kittyOk, setKittyOk] = useState<boolean | null>(null);
   const [token, setToken] = useState("");
-  const [busy, setBusy] = useState<"" | "claude" | "kitty">("");
+  const [busy, setBusy] = useState<"" | "agent" | "kitty">("");
 
   // First-mount decision. Only OPEN the gate once we actually know the backend
   // state and the minimum is missing. Retry a few times so a still-booting
@@ -57,15 +89,18 @@ export default function FirstRunSetup() {
         const cfg = await getConfig().catch(() => null);
         if (!alive) return;
         if (cfg) {
-          const claude = await testEndpoint("anthropic").catch(() => null);
+          const configuredAgent = cfg.fields.find((f) => f.key === "MURRKIT_AGENT_CLI");
+          const nextAgent = configuredAgent?.value === "codex" ? "codex" : "claude";
+          setAgentCli(nextAgent);
+          const agent = await testEndpoint("anthropic").catch(() => null);
           if (!alive) return;
           const kitty = cfg.fields.find((f) => f.key === "KITTY_APP_TOKEN");
           const kSet = !!kitty?.is_set;
-          const cOk = !!claude?.ok;
+          const aOk = !!agent?.ok;
           setKittySet(kSet);
-          setClaudeOk(cOk);
-          setClaudeDetail(claude?.detail ?? "");
-          if (kSet && cOk && !forced) setOnboardingDone(true);
+          setAgentOk(aOk);
+          setAgentDetail(agent?.detail ?? "");
+          if (kSet && aOk && !forced) setOnboardingDone(true);
           else setOpen(true);
           return;
         }
@@ -77,11 +112,25 @@ export default function FirstRunSetup() {
     };
   }, [hydrated, onboardingDone, setOnboardingDone]);
 
-  async function recheckClaude() {
-    setBusy("claude");
+  async function setAgent(next: AgentCli) {
+    setAgentCli(next);
+    setBusy("agent");
+    try {
+      await updateConfig({ MURRKIT_AGENT_CLI: next }).catch(() => null);
+      window.dispatchEvent(new CustomEvent("murrkit:agent-cli-changed", { detail: { agent: next } }));
+      const r = await testEndpoint("anthropic").catch(() => null);
+      setAgentOk(!!r?.ok);
+      setAgentDetail(r?.detail ?? "");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function recheckAgent() {
+    setBusy("agent");
     const r = await testEndpoint("anthropic").catch(() => null);
-    setClaudeOk(!!r?.ok);
-    setClaudeDetail(r?.detail ?? "");
+    setAgentOk(!!r?.ok);
+    setAgentDetail(r?.detail ?? "");
     setBusy("");
   }
 
@@ -106,7 +155,8 @@ export default function FirstRunSetup() {
   }
 
   if (!open) return null;
-  const minimumMet = claudeOk === true && kittySet === true;
+  const selectedCopy = AGENT_COPY[agentCli];
+  const minimumMet = agentOk === true && kittySet === true;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -130,32 +180,58 @@ export default function FirstRunSetup() {
 
         {/* Steps */}
         <div className="p-6 space-y-4">
-          {/* STEP 1 — Claude Code */}
-          <StepCard n={1} icon={<TerminalSquare className="h-4 w-4" />} title="Claude Code CLI — the captain" ok={claudeOk}>
+          {/* STEP 1 — local agent */}
+          <StepCard n={1} icon={<TerminalSquare className="h-4 w-4" />} title={selectedCopy.title} ok={agentOk}>
+            <div
+              role="radiogroup"
+              aria-label="Local agent CLI"
+              className="mb-3 grid grid-cols-2 gap-2"
+            >
+              {(["claude", "codex"] as const).map((option) => {
+                const selected = agentCli === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setAgent(option)}
+                    disabled={busy === "agent"}
+                    className={`text-left px-3 py-2 rounded border transition-colors ${
+                      selected
+                        ? "border-accent bg-accent/10 text-text"
+                        : "border-line bg-bg-subtle text-text-dim hover:text-text"
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{AGENT_COPY[option].modeLabel}</div>
+                    <div className="text-[10px] text-text-subtle mt-0.5">
+                      {option === "claude" ? "Original upstream route" : "Optional Codex route"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
             <p className="text-xs text-text-dim leading-relaxed">
               The agent that designs &amp; writes your game. murrkit spawns the{" "}
-              <code className="px-1 rounded bg-bg-subtle font-mono">claude</code> binary locally —
-              install &amp; sign in once (an Anthropic Pro/Max subscription works, or an API key).
+              <code className="px-1 rounded bg-bg-subtle font-mono">{selectedCopy.binary}</code> binary locally.
+              {" "}{selectedCopy.body}
             </p>
             <pre className="mt-2 text-[11px] bg-bg-subtle border border-line rounded p-2 overflow-x-auto font-mono text-text whitespace-pre">
-{`npm install -g @anthropic-ai/claude-code
-claude        # sign in, then /exit`}
+{selectedCopy.commands}
             </pre>
-            {claudeDetail && (
-              <div className="mt-1 text-[10px] font-mono text-text-subtle truncate">{claudeDetail}</div>
+            {agentDetail && (
+              <div className="mt-1 text-[10px] font-mono text-text-subtle truncate">{agentDetail}</div>
             )}
             <div className="mt-2 flex items-center gap-3">
-              <button onClick={recheckClaude} className="btn btn-ghost text-[11px]" disabled={busy === "claude"}>
-                {busy === "claude" ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <button onClick={recheckAgent} className="btn btn-ghost text-[11px]" disabled={busy === "agent"}>
+                {busy === "agent" ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                 Re-check
               </button>
               <a
-                href="https://claude.com/claude-code"
+                href={selectedCopy.docsHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[11px] text-accent hover:underline inline-flex items-center gap-1"
               >
-                Install docs <ExternalLink className="h-3 w-3" />
+                {selectedCopy.docsLabel} <ExternalLink className="h-3 w-3" />
               </a>
             </div>
           </StepCard>
@@ -222,10 +298,9 @@ claude        # sign in, then /exit`}
 
           {/* Chrome MCP tip */}
           <div className="text-[11px] text-text-dim bg-accent/5 border border-accent/30 rounded-lg p-3 leading-relaxed">
-            💡 <span className="font-medium text-text">Double control:</span> run Claude Code with the{" "}
-            <span className="font-medium">Chrome MCP</span> connector, then just ask Claude{" "}
-            <span className="italic">&ldquo;launch murrkit in Chrome and show me the dashboard&rdquo;</span> — it opens the
-            real app, screenshots it and clicks around, so you and Claude watch the same running game.
+            <span className="font-medium text-text">Double control:</span> use the browser/playtest tooling with your selected
+            captain, then ask it <span className="italic">&ldquo;launch murrkit in Chrome and show me the dashboard&rdquo;</span>.
+            The same murrkit rules, imagination step, and verification gates apply to both Claude Code and Codex.
           </div>
         </div>
 
@@ -243,7 +318,7 @@ claude        # sign in, then /exit`}
                 : "bg-bg-subtle text-text-subtle cursor-not-allowed"
             }`}
           >
-            {minimumMet ? "Enter murrkit" : "Add the two above to continue"}
+            {minimumMet ? "Enter murrkit" : "Choose an agent and add Kitty to continue"}
             <ArrowRight className="h-4 w-4" />
           </button>
         </div>

@@ -35,7 +35,6 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -48,7 +47,6 @@ from typing import Any, AsyncIterator, Iterator
 from fastapi import (
     APIRouter,
     File,
-    Form,
     HTTPException,
     UploadFile,
     WebSocket,
@@ -610,8 +608,9 @@ async def chat_autoplay(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"kind": "error", "error": str(e)}))
             return
 
-        # Always opus-4-8 for autoplay — the loop is the heavy self-improver.
-        model_choice = _CLAUDE_OPUS_MODEL
+        # Always use the heavy route for autoplay; resolve it per active runtime
+        # so Codex mode never receives a Claude model id.
+        model_choice = _resolve_model_choice("claude_opus")
         task = _Task(task_id=task_id, kind="claude_cli")
         _tasks[task_id] = task
 
@@ -891,9 +890,9 @@ async def _stream_deepseek(
     }
 
 
-# ---- Claude CLI backend -----------------------------------------------------
+# ---- Local agent CLI backend ------------------------------------------------
 
-# Model pins for the inner game-maker Claude.  We pin the OPUS choice to the
+# Model pins for the original inner game-maker Claude.  We pin the OPUS choice to the
 # exact 4.8 model ID (verified valid 2026-05-28) rather than the bare "opus"
 # alias so the inner agent never silently drifts to a different Opus build
 # mid-experiment.  Sonnet stays on the alias (cheap, always-latest is fine).
@@ -901,15 +900,85 @@ _CLAUDE_OPUS_MODEL = "claude-opus-4-8"
 _CLAUDE_SONNET_MODEL = "sonnet"
 
 
+def _env_value(key: str, default: str = "") -> str:
+    """Read a simple KEY=value override from .env without requiring a restart."""
+    try:
+        env_path = PROJECT_ROOT / ".env"
+        if env_path.is_file():
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                if k.strip().upper() == key:
+                    return v.strip().strip('"').strip("'")
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get(key, default)
+
+
+def _agent_cli_kind() -> str:
+    """Return the configured local agent CLI kind.
+
+    Claude Code remains the upstream default. Setting MURRKIT_AGENT_CLI=codex
+    routes the same murrkit captain prompt through Codex CLI.
+    """
+    kind = (_env_value("MURRKIT_AGENT_CLI", settings.agent_cli or "claude")).strip().lower()
+    return kind if kind in {"codex", "claude"} else "claude"
+
+
 def _resolve_model_choice(req_model: str) -> str:
-    """Map a chat model key ('claude_opus' / 'claude_sonnet') to the CLI
-    --model value.  Centralized so the stream + non-stream paths can't diverge."""
-    return _CLAUDE_OPUS_MODEL if req_model == "claude_opus" else _CLAUDE_SONNET_MODEL
+    """Map a UI chat model key to the configured CLI --model value."""
+    if _agent_cli_kind() == "claude":
+        return _CLAUDE_OPUS_MODEL if req_model == "claude_opus" else _CLAUDE_SONNET_MODEL
+
+    if req_model == "claude_opus":
+        return _env_value("CODEX_MODEL_HEAVY", settings.codex_model_heavy) or _env_value("CODEX_MODEL", settings.codex_model)
+    return _env_value("CODEX_MODEL_FAST", settings.codex_model_fast) or _env_value("CODEX_MODEL", settings.codex_model)
+
+
+def _configured_cli_path(binary: str, fallback_paths: tuple[str, ...] = ()) -> str | None:
+    """Locate a CLI executable from an explicit path, PATH lookup, or known fallback."""
+    binary = (binary or "").strip()
+    if binary and (os.path.sep in binary or (os.path.altsep and os.path.altsep in binary)):
+        expanded = os.path.expanduser(binary)
+        return expanded if os.path.isfile(expanded) else None
+    found = shutil.which(binary) if binary else None
+    if found:
+        return found
+    for guess in fallback_paths:
+        expanded = os.path.expanduser(guess)
+        if os.path.isfile(expanded):
+            return expanded
+    return None
+
+
+def _codex_cli_path() -> str | None:
+    """Locate the Codex CLI executable."""
+    return _configured_cli_path(
+        _env_value("CODEX_CLI_BIN", settings.codex_cli_bin),
+        (
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "/usr/local/bin/codex",
+            "/opt/homebrew/bin/codex",
+        ),
+    )
 
 
 def _claude_cli_path() -> str | None:
     """Locate `claude` executable."""
-    return shutil.which("claude")
+    return _configured_cli_path(
+        _env_value("CLAUDE_CLI_BIN", settings.claude_cli_bin),
+        (
+            os.path.expanduser(r"~\.local\bin\claude.exe"),
+            os.path.expanduser(r"~\.local\bin\claude.cmd"),
+            os.path.expanduser(r"~\AppData\Local\claude\claude.exe"),
+        ),
+    )
+
+
+def _agent_cli_path() -> str | None:
+    return _claude_cli_path() if _agent_cli_kind() == "claude" else _codex_cli_path()
 
 
 # Playwright MCP — gives the inner Claude REAL browser tools to PLAY + TEST the
@@ -961,6 +1030,172 @@ def _cli_env() -> dict[str, str]:
     return env
 
 
+def _codex_exec_cmd(cli: str, model_choice: str = "") -> list[str]:
+    """Build the non-interactive Codex command used as murrkit's captain."""
+    cmd = [
+        cli,
+        "--ask-for-approval",
+        _env_value("CODEX_APPROVAL_POLICY", settings.codex_approval_policy) or "never",
+        "exec",
+        "--json",
+        "--cd",
+        str(PROJECT_ROOT),
+        "--sandbox",
+        _env_value("CODEX_SANDBOX", settings.codex_sandbox) or "workspace-write",
+    ]
+    if model_choice:
+        cmd += ["--model", model_choice]
+    cmd.append("-")
+    return cmd
+
+
+def _text_from_jsonish(value: Any) -> str:
+    """Best-effort text extraction for Codex JSONL events across CLI versions."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_text_from_jsonish(item) for item in value)
+    if not isinstance(value, dict):
+        return ""
+
+    if value.get("type") == "text" and isinstance(value.get("text"), str):
+        return value["text"]
+
+    for key in (
+        "text",
+        "message",
+        "content",
+        "delta",
+        "result",
+        "final_response",
+        "last_message",
+        "last_agent_message",
+        "output_text",
+        "output",
+    ):
+        text = _text_from_jsonish(value.get(key))
+        if text:
+            return text
+
+    # Some Codex builds wrap the real event under `msg`, `event`, or `data`.
+    for key in ("msg", "event", "data", "payload", "item"):
+        nested = value.get(key)
+        if not isinstance(nested, (dict, list)):
+            continue
+        text = _text_from_jsonish(nested)
+        if text:
+            return text
+    return ""
+
+
+def _codex_event_type(evt: dict[str, Any]) -> str:
+    payload = evt.get("msg") if isinstance(evt.get("msg"), dict) else evt
+    for key in ("type", "kind", "event", "name"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _append_stream_text(full_text: str, text: str) -> tuple[str, str]:
+    """Return (new_full_text, delta) while avoiding obvious duplicate full-message events."""
+    if not text:
+        return full_text, ""
+    if text == full_text or full_text.endswith(text):
+        return full_text, ""
+    if text.startswith(full_text):
+        delta = text[len(full_text):]
+        return text, delta
+    return full_text + text, text
+
+
+def _codex_tool_event(evt: dict[str, Any]) -> dict[str, Any] | None:
+    etype = _codex_event_type(evt).lower()
+    if "tool" not in etype and "exec" not in etype and "command" not in etype:
+        return None
+
+    payload = evt.get("msg") if isinstance(evt.get("msg"), dict) else evt
+    name = (
+        payload.get("tool")
+        or payload.get("tool_name")
+        or payload.get("name")
+        or payload.get("command")
+        or etype
+    )
+    summary_value = (
+        payload.get("arguments")
+        or payload.get("args")
+        or payload.get("input")
+        or payload.get("output")
+        or payload.get("result")
+        or payload.get("message")
+        or payload
+    )
+    try:
+        summary = json.dumps(summary_value, ensure_ascii=False)[:400]
+    except Exception:  # noqa: BLE001
+        summary = str(summary_value)[:400]
+
+    event_id = str(payload.get("id") or payload.get("call_id") or uuid.uuid4().hex)
+    if "result" in etype or "output" in etype or "completed" in etype:
+        return {"kind": "tool_result", "id": event_id, "ok": True, "result_summary": summary}
+    return {"kind": "tool_use", "id": event_id, "name": str(name), "args_summary": summary}
+
+
+def _collect_codex_result(stdout: bytes) -> str:
+    """Extract the final assistant text from Codex JSONL or plain stdout."""
+    raw = stdout.decode("utf-8", errors="replace")
+    full_text = ""
+    parsed_any = False
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        parsed_any = True
+        text = _text_from_jsonish(evt)
+        full_text, _ = _append_stream_text(full_text, text)
+    return full_text or ("" if parsed_any else raw.strip())
+
+
+async def _run_codex_cli(
+    user_text: str,
+    attachments: list[dict[str, str]] | None = None,
+    model_choice: str = "",
+    project_name: str | None = None,
+) -> tuple[str, float]:
+    """Non-streaming Codex CLI invocation."""
+    cli = _codex_cli_path()
+    if cli is None:
+        return ("[Codex CLI not installed or not on PATH. Install/open Codex Desktop first.]", 0.0)
+
+    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
+    cmd = _codex_exec_cmd(cli, model_choice=model_choice)
+    logger.info(
+        "Codex CLI (non-stream): model={m} prompt_chars={pc} via=stdin",
+        m=model_choice or "(config default)", pc=len(prompt),
+    )
+    result = await asyncio.to_thread(
+        subprocess.run,
+        cmd,
+        cwd=str(PROJECT_ROOT),
+        input=prompt.encode("utf-8"),
+        capture_output=True,
+        text=False,
+        timeout=1200,
+        env=_cli_env(),
+    )
+    if result.returncode != 0:
+        err = result.stderr.decode("utf-8", errors="replace")[:800]
+        return (f"[Codex CLI exit {result.returncode}: {err}]", 0.0)
+    return _collect_codex_result(result.stdout), 0.0
+
+
 async def _run_claude_cli(
     user_text: str,
     attachments: list[dict[str, str]] | None = None,
@@ -968,6 +1203,14 @@ async def _run_claude_cli(
     project_name: str | None = None,
 ) -> tuple[str, float]:
     """Non-streaming Claude CLI invocation (one --output-format=json call)."""
+    if _agent_cli_kind() == "codex":
+        return await _run_codex_cli(
+            user_text,
+            attachments=attachments,
+            model_choice=model_choice,
+            project_name=project_name,
+        )
+
     cli = _claude_cli_path()
     if cli is None:
         return ("[Claude CLI not installed — install from https://docs.claude.com/en/docs/claude-code/quickstart]", 0.0)
@@ -1024,6 +1267,238 @@ async def _run_claude_cli(
     return text, cost
 
 
+async def _stream_codex_cli(
+    user_text: str,
+    attachments: list[dict[str, str]] | None = None,
+    model_choice: str = "",
+    abort_event: asyncio.Event | None = None,
+    task: _Task | None = None,
+    project_name: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream Codex CLI JSONL events as murrkit chat events."""
+    cli = _codex_cli_path()
+    if cli is None:
+        yield {
+            "kind": "final",
+            "text": "[Codex CLI not installed or not on PATH. Install/open Codex Desktop first.]",
+            "cost_usd": 0.0,
+        }
+        return
+
+    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
+    cmd = _codex_exec_cmd(cli, model_choice=model_choice)
+    logger.info(
+        "Codex CLI (stream): model={m} cwd={c} prompt_chars={pc} via=stdin",
+        m=model_choice or "(config default)", c=PROJECT_ROOT, pc=len(prompt),
+    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            bufsize=1,
+            env=_cli_env(),
+        )
+    except (OSError, FileNotFoundError) as e:
+        yield {"kind": "final", "text": f"[Failed to spawn Codex CLI: {e!s}]", "cost_usd": 0.0}
+        return
+
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(prompt.encode("utf-8"))
+        proc.stdin.close()
+    except (OSError, BrokenPipeError) as e:
+        yield {
+            "kind": "final",
+            "text": f"[Failed to send prompt to Codex CLI stdin: {e!s}]",
+            "cost_usd": 0.0,
+        }
+        return
+
+    if task is not None:
+        task.proc = proc
+
+    line_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=2048)
+    loop = asyncio.get_running_loop()
+
+    def _reader() -> None:
+        try:
+            assert proc.stdout is not None
+            for raw in iter(proc.stdout.readline, b""):
+                asyncio.run_coroutine_threadsafe(line_queue.put(raw), loop)
+        finally:
+            asyncio.run_coroutine_threadsafe(line_queue.put(None), loop)
+
+    reader_thread = threading.Thread(target=_reader, name="codex-cli-reader", daemon=True)
+    reader_thread.start()
+
+    full_text = ""
+    stream_guard = _StreamGuard(project_name=project_name or "default")
+    started_t = time.time()
+
+    async def _watcher() -> None:
+        if abort_event is None:
+            return
+        try:
+            await abort_event.wait()
+        except asyncio.CancelledError:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+
+    watcher_task = asyncio.create_task(_watcher())
+    try:
+        while True:
+            line_b = await line_queue.get()
+            if line_b is None:
+                break
+            line = line_b.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                full_text, delta = _append_stream_text(full_text, line)
+                if delta:
+                    yield {"kind": "token", "text": delta}
+                continue
+
+            etype = _codex_event_type(evt).lower()
+            if "error" in etype:
+                yield {"kind": "error", "error": _text_from_jsonish(evt) or json.dumps(evt)[:300]}
+                continue
+
+            tool_event = _codex_tool_event(evt)
+            if tool_event is not None:
+                yield tool_event
+                if tool_event.get("kind") == "tool_use":
+                    name = str(tool_event.get("name") or "")
+                    args_summary = str(tool_event.get("args_summary") or "")
+                    imag_warning = _check_imagination_before_tool(stream_guard, name)
+                    if imag_warning is not None:
+                        yield imag_warning
+                        _log_failure({
+                            "project": stream_guard.project_name,
+                            **imag_warning,
+                            "context": {
+                                "runtime": "codex",
+                                "tool": name,
+                                "args": args_summary,
+                                "imagination_seen": stream_guard.imagination_block_seen,
+                            },
+                        })
+                    dedup_warning = _check_tool_dedup(stream_guard, f"{name}:{args_summary}")
+                    if dedup_warning is not None:
+                        yield dedup_warning
+                        _log_failure({
+                            "project": stream_guard.project_name,
+                            **dedup_warning,
+                            "context": {"runtime": "codex", "tool": name, "args": args_summary},
+                        })
+                elif tool_event.get("kind") == "tool_result":
+                    summary = str(tool_event.get("result_summary") or "")
+                    _absorb_vision_event(stream_guard, {"summary": summary})
+                    _absorb_playtest_verdict(stream_guard, summary)
+                continue
+
+            text = _text_from_jsonish(evt)
+            if not text:
+                continue
+            if "reason" in etype or "thinking" in etype:
+                yield {"kind": "thought", "text": text}
+                continue
+            full_text, delta = _append_stream_text(full_text, text)
+            if delta:
+                yield {"kind": "token", "text": delta}
+                rh_warning = _check_reward_hack(stream_guard, delta)
+                if rh_warning is not None:
+                    yield rh_warning
+                    _log_failure({
+                        "project": stream_guard.project_name,
+                        **rh_warning,
+                        "context": {"runtime": "codex", "text_snippet": delta[:200]},
+                    })
+                _check_imagination_in_text(stream_guard, delta)
+
+        await asyncio.to_thread(reader_thread.join, 10.0)
+        await asyncio.to_thread(proc.wait, 5.0)
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+    stderr = ""
+    try:
+        if proc.stderr is not None:
+            stderr = proc.stderr.read().decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        stderr = ""
+
+    if proc.returncode and proc.returncode != 0 and not full_text:
+        full_text = f"[Codex CLI exit {proc.returncode}: {stderr[:800]}]"
+
+    if full_text and not stream_guard.reward_hack_warning_sent:
+        judge = await _llm_judge_completion(full_text)
+        if judge is not None and judge.get("claims_done"):
+            stream_guard.llm_judge_completion_detected = True
+            vision_ok = (
+                stream_guard.latest_vision_gate_pass
+                and stream_guard.latest_vision_gate_score >= 7
+                and (time.time() - stream_guard.latest_vision_gate_ts) <= _REWARD_HACK_PASS_WINDOW_S
+            )
+            playtest_ok = (
+                stream_guard.latest_playtest_verdict_pass
+                and (time.time() - stream_guard.latest_playtest_verdict_ts) <= _REWARD_HACK_PASS_WINDOW_S
+            )
+            stream_guard.llm_judge_evidence_ok = vision_ok and playtest_ok
+            if not stream_guard.llm_judge_evidence_ok:
+                judge_warning = {
+                    "kind": "warning",
+                    "level": "reward_hack_llm_judge",
+                    "text": (
+                        "⚠️ LLM-JUDGE (HARDEN-6): DeepSeek wykrył deklarację "
+                        f"ukończenia ('{(judge.get('snippet') or '')[:80]}'), "
+                        "ale gating evidence się NIE zgadza. "
+                        f"vision_pass={vision_ok}, playtest_pass={playtest_ok}. "
+                        "Zignoruj swój '✅' / 'done' / 'works' — to nie jest "
+                        "evidence-backed claim. Wróć i dokończ vision-gate + "
+                        "playtest-verdict zanim user zobaczy zielony status."
+                    ),
+                }
+                yield judge_warning
+                _log_failure({
+                    "project": stream_guard.project_name,
+                    **judge_warning,
+                    "context": {
+                        "runtime": "codex",
+                        "snippet": judge.get("snippet"),
+                        "has_evidence_per_llm": judge.get("has_evidence"),
+                        "vision_pass": vision_ok,
+                        "playtest_pass": playtest_ok,
+                    },
+                })
+
+    yield {
+        "kind": "final",
+        "text": full_text or "(no output from Codex CLI)",
+        "cost_usd": 0.0,
+        "duration_ms": int((time.time() - started_t) * 1000),
+        "num_turns": 0,
+    }
+
+
 async def _stream_claude_cli(
     user_text: str,
     attachments: list[dict[str, str]] | None = None,
@@ -1037,6 +1512,18 @@ async def _stream_claude_cli(
 
     Emits: started → (thought | tool_use | tool_result | token)* → final
     """
+    if _agent_cli_kind() == "codex":
+        async for chunk in _stream_codex_cli(
+            user_text,
+            attachments=attachments,
+            model_choice=model_choice,
+            abort_event=abort_event,
+            task=task,
+            project_name=project_name,
+        ):
+            yield chunk
+        return
+
     cli = _claude_cli_path()
     if cli is None:
         yield {
@@ -1825,9 +2312,9 @@ def _build_claude_prompt(
     *,
     project_name: str | None = None,
 ) -> str:
-    """Build the full prompt passed to claude --print, including attachment paths
-    and the active murrkit project context so Claude never asks which project
-    we're in. Also auto-injects persisted progress + prior-session failures.
+    """Build the full captain prompt, including attachment paths and the active
+    murrkit project context so the local agent never asks which project we're in.
+    Also auto-injects persisted progress + prior-session failures.
     """
     parts = [user_text.strip() or "(empty)"]
     if attachments:
@@ -1857,9 +2344,20 @@ def _build_claude_prompt(
     parts.append(_memory_prompt_snippet(project_name or "default"))
 
     # ---- Auto-injected runtime context ----
+    agent_runtime = _agent_cli_kind()
     game_path = str(settings.unity_project_path)   # → phaser_game/ (Phaser project root)
     game_name = settings.unity_project_name
     ctx_lines = [
+        "\n\n## Local captain runtime",
+        f"- Active local agent CLI: `{agent_runtime}`.",
+        "- You are still the same murrkit game-dev captain: preserve the GDD gate, "
+        "🎨 IMAGINATION, asset rules, playtest gates, composition checks, and "
+        "reward-hack guards below.",
+        "- If this run is under Codex CLI, interpret Claude Code tool names in this "
+        "historical guide as their Codex equivalents: read/write files, run shell "
+        "commands, call local murrkit HTTP endpoints, inspect generated PNG/video "
+        "artifacts, and verify with Playwright/playtest evidence before claiming done.",
+        "- If this run is under Claude Code, keep the original Claude Code behavior.",
         # ====================================================================
         # DESIGN-FIRST GDD GATE — HIGHEST PRIORITY (Pillar 1).
         # User explicitly wants the inner Claude to design deeply and confirm
@@ -1926,7 +2424,7 @@ def _build_claude_prompt(
         "pełny GDD do `design.md` i potwierdź ścieżkę. To NIE jest kod gry.",
         "  - User pisze **CANCEL** → porzuć, zapytaj czego user chce zamiast tego.",
         "",
-        "**Reconcile z regułą „claude ma mnie nigdy nie pytać”:**",
+        "**Reconcile z regułą autonomii lokalnego kapitana:**",
         "  - Dla rutynowych/trywialnych akcji (edit pliku, screenshot, playtest, "
         "bg-removal, reuse assetu, fix buga, mały tweak) — NIGDY nie pytaj "
         "pozwolenia. Po prostu rób (patrz DESIGNER MODE + reszta promptu).",
@@ -2197,17 +2695,48 @@ def _build_claude_prompt(
         "- Game runtime: Phaser 3 + TypeScript + Vite, dev-server on http://127.0.0.1:5173 (hot-reload sub-second on level YAML / TS edits)",
         "- Playtest pipeline: `POST http://127.0.0.1:8002/api/phaser/playtest` (Playwright drag-launches cats + captures 40 PNG frames @ 200ms + WebM video + state_trace[342 frames] + collision_log + dynamic_verdict). See HARDEN-1..5 sections below.",
         "- Vision review: `POST http://127.0.0.1:8002/api/vision/review` with `provider: \"qwen\"|\"gemini\"`, `mode: \"compare\"|\"chronological\"`, frame_paths from playtest output.",
-        "- 🎮 PLAY IT YOURSELF: you have Playwright browser MCP tools (`mcp__playwright__browser_*`, headless Chromium) — open the live game, screenshot it, read `window.__gameState()`, and send keys/mouse/drag to ACTUALLY play + smoke-test it. Full workflow in the '🎮 PLAY THE GAME YOURSELF' section below.",
+        (
+            "- 🎮 PLAY IT YOURSELF: in Claude Code mode you have Playwright browser MCP tools "
+            "(`mcp__playwright__browser_*`, headless Chromium) — open the live game, screenshot it, "
+            "read `window.__gameState()`, and send keys/mouse/drag to ACTUALLY play + smoke-test it. "
+            "Full workflow in the '🎮 PLAY THE GAME YOURSELF' section below."
+            if agent_runtime == "claude"
+            else "- 🎮 VERIFY IT YOURSELF: in Codex mode, do not assume Claude MCP tool names exist. "
+            "Use Codex file/shell tools plus the deterministic murrkit HTTP gates: "
+            "`/api/phaser/playtest`, `/api/phaser/drive`, `/api/phaser/composition-check`, "
+            "screenshots/videos/grids on disk, and `window.__gameState()` through any available browser "
+            "automation. Same evidence standard; different tool surface."
+        ),
         "- Game code lives in `phaser_game/src/` (scenes, prefabs, builders) + `phaser_game/levels/*.yaml`.",
         f"- GENERATED assets land per-project under `projects/{project_name or 'default'}/Generated/<Category>/<slug>/` (Category ∈ Sprites/Backgrounds/UI/FX/Tilesets, chosen deterministically from each asset's role). Browse them via `GET /api/library/{project_name or 'default'}`. The Phaser game's runtime copy under `phaser_game/public/assets/` is separate — generation does NOT write there.",
-        "- This is a pure Phaser/TypeScript stack: there is NO game-engine editor and NO `/api/unity/*` (those belong to the retired predecessor). The ONLY MCP you have is the Playwright BROWSER one above — use it to play/test the game; there is no engine-MCP.",
-        "- Read `CLAUDE.md` (already in cwd) for full API surface and examples.",
+        (
+            "- This is a pure Phaser/TypeScript stack: there is NO game-engine editor and NO `/api/unity/*` "
+            "(those belong to the retired predecessor). In Claude Code mode the ONLY MCP you have is the "
+            "Playwright BROWSER one above — use it to play/test the game; there is no engine-MCP."
+            if agent_runtime == "claude"
+            else "- This is a pure Phaser/TypeScript stack: there is NO game-engine editor and NO `/api/unity/*` "
+            "(those belong to the retired predecessor). In Codex mode, use available Codex tools and the "
+            "murrkit HTTP gates; do not assume an engine-MCP or Claude MCP tool namespace exists."
+        ),
+        "- Read `CLAUDE.md` (already in cwd) as the canonical upstream project guide. In Codex mode, translate Claude-specific tool names to the active Codex tool surface.",
         "- Available skills are listed via `/api/chat/skills` and auto-loaded.",
         "- Never ask which project — it is the one above.",
         "- Match user's language (Polish if they speak Polish).",
         "",
-        "## 🎮 PLAY THE GAME YOURSELF — browser MCP (interactive playtest)",
-        "You have **Playwright browser MCP tools** (`mcp__playwright__browser_*`) driving a HEADLESS Chromium. This lets you ACTUALLY PLAY the game like a human — not just trust one static screenshot or a pre-scripted bot. Use it as the heart of every playtest, ALONGSIDE (not instead of) the deterministic `/api/phaser/playtest` gate and the vision compare-gate.",
+        "## 🎮 PLAY THE GAME YOURSELF — interactive playtest",
+        (
+            "In Claude Code mode you have **Playwright browser MCP tools** "
+            "(`mcp__playwright__browser_*`) driving a HEADLESS Chromium. This lets you ACTUALLY PLAY "
+            "the game like a human — not just trust one static screenshot or a pre-scripted bot. Use it "
+            "as the heart of every playtest, ALONGSIDE (not instead of) the deterministic "
+            "`/api/phaser/playtest` gate and the vision compare-gate."
+            if agent_runtime == "claude"
+            else "In Codex mode, use the same verification intent through the tools Codex actually has: "
+            "file reads, shell commands, local HTTP calls to murrkit, generated screenshots/videos/grids, "
+            "and any available browser automation. Do not claim `mcp__playwright__browser_*` unless that "
+            "MCP surface is really available in the active Codex session. The deterministic "
+            "`/api/phaser/playtest` and `/api/phaser/drive` gates remain mandatory."
+        ),
         "",
         "The loop — OBSERVE → DECIDE → ACT → RE-OBSERVE:",
         "  1. `browser_navigate` → `http://127.0.0.1:5173/?level=<level_id>` (the level you're working on; Vite is already up when the game shows in the app).",
@@ -2783,7 +3312,7 @@ def _build_claude_prompt(
         "",
         "  ✓ DO: in one response — `tool_use(/api/sprite-gen/character)`, "
         "`tool_use(/api/sprite-gen/character)`, `tool_use(/api/asset-gen/background)` "
-        "all at once. The Claude Code runtime executes them concurrently.",
+        "all at once. The active local agent runtime executes them concurrently.",
         "  ✗ DO NOT: tool_use → wait for result → tool_use → wait → tool_use "
         "for clearly independent operations. That's serial; it wastes turns.",
         "",
@@ -3318,7 +3847,7 @@ def _build_claude_prompt(
         "reading a huge Vite/Playwright console dump yourself; spend your "
         "context on the triaged top_actions, not 200 KB of stack traces.",
         "",
-        "    ### C) Qwen-VL — FALLBACK ONLY, claude-justified",
+        "    ### C) Qwen-VL — FALLBACK ONLY, evidence-justified",
         "    Do NOT auto-route to Qwen. Use ONLY when you have a specific "
         "reason for a non-Google second opinion (Gemini result feels off, "
         "cross-vendor consensus on a high-stakes call). Workflow:",
