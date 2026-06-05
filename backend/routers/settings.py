@@ -475,7 +475,7 @@ async def test_anthropic() -> TestResult:
             auth_mode = "API ($ANTHROPIC_API_KEY)"
         elif agent == "codex":
             auth_ready = _codex_auth_file_present()
-            auth_mode = "Codex login detected" if auth_ready else "Codex login not detected"
+            auth_mode = "Codex login detected (plan not verified)" if auth_ready else "Codex login not detected"
         version = out.split()[-1] if out else "?"
         return TestResult(
             ok=result.returncode == 0 and auth_ready,

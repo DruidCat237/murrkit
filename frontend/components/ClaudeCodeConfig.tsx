@@ -161,7 +161,7 @@ export default function ClaudeCodeConfig() {
             label="Mode"
             value={!isCodex ? (status?.mode === "api" ? "API key" : "Subscription") : "Codex login"}
             ok={true}
-            hint={!isCodex ? (status?.mode === "subscription" ? "$0 per call" : "Pay-per-token") : "Uses local Codex auth"}
+            hint={!isCodex ? (status?.mode === "subscription" ? "$0 per call" : "Pay-per-token") : "Requires active Codex plan; login only is detected"}
           />
           <StatusCard
             icon={<Sparkles className="h-3.5 w-3.5" />}

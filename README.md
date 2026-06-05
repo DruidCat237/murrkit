@@ -31,10 +31,10 @@ murrkit is the *orchestrator*. It does **not** ship the AI brain or an image mod
 
 | | Service | Why it's required | Cost |
 |---|---|---|---|
-| 1️⃣ | **Claude Code CLI or Codex CLI** | The "captain" — the agent that actually designs & writes the game. murrkit spawns it locally. | Claude subscription/API key or Codex login |
+| 1️⃣ | **Claude Code CLI or Codex CLI** | The "captain" — the agent that actually designs & writes the game. murrkit spawns it locally. | Claude subscription/API key, or Codex login with an active Codex subscription/plan |
 | 2️⃣ | **[Kitty](https://druidcat.app/dashboard) API token** | Generates every sprite sheet / tileset / UI image. | Pay-as-you-go credits (cheap; ~$0.04–0.16 / image) |
 
-> **That's the whole minimum: one local agent CLI + a Kitty token.** Everything else (DeepSeek, Gemini, ElevenLabs) is optional and only sharpens vision-QA / audio.
+> **That's the whole minimum: one local agent CLI + a Kitty token.** For Codex, murrkit can detect local login, but your Codex account still needs the active access/subscription required by the Codex CLI. Everything else (DeepSeek, Gemini, ElevenLabs) is optional and only sharpens vision-QA / audio.
 
 You don't have to touch `.env` by hand — on first launch the app shows a **Setup screen** that walks you through both. (Manual `.env` is documented below too.)
 

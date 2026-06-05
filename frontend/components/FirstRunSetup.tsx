@@ -38,7 +38,7 @@ const AGENT_COPY: Record<AgentCli, {
   codex: {
     title: "Codex CLI — the captain",
     binary: "codex",
-    body: "Open Codex Desktop and sign in once, or use the Codex CLI login flow.",
+    body: "Open Codex Desktop and sign in with a Codex account that has active access/subscription, or use the Codex CLI login flow.",
     commands: "codex --version\ncodex login   # only if Codex is not signed in yet",
     docsHref: "https://openai.com/codex/",
     docsLabel: "Codex docs",
