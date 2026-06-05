@@ -63,8 +63,8 @@ export default function ReferencesBadge() {
       ].join(" ")}
       title={
         isEmpty
-          ? "Click to open References tab — drop gameplay clips, real-game screenshots, mood-board images here. Inner Claude auto-uses them as ground-truth."
-          : `${count} reference material(s) for ${projectName} — Claude has full access. Click to manage.`
+          ? "Click to open References tab — drop gameplay clips, real-game screenshots, mood-board images here. The selected captain auto-uses them as ground-truth."
+          : `${count} reference material(s) for ${projectName} — selected captain has full access. Click to manage.`
       }
     >
       <FolderOpen className="h-3 w-3" />

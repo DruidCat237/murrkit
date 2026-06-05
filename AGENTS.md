@@ -10,6 +10,12 @@ the original Claude Code path.
 - Use `codex exec` only when the active runtime is Codex.
 - Keep internal model keys `claude_sonnet` and `claude_opus` for compatibility:
   they map to Sonnet/Opus under Claude and Balanced/Heavy under Codex.
+- Codex must preserve the same captain wrapper contract as Claude Code:
+  persisted per-project session continuity, native image/reference attachment
+  handling, GDD/imagination gates, asset rules, playtest gates, and
+  reward-hack guards.
+- For Codex, inject the Playwright MCP config per `codex exec` invocation
+  rather than requiring a standing global Codex MCP server.
 - Do not remove or weaken the Claude Code path.
 
 ## Project Guide

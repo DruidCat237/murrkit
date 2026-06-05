@@ -25,7 +25,7 @@ import {
 import type { ConfigField, ConfigSnapshot, TestResult } from "@/lib/types";
 import ClaudeCodeConfig from "@/components/ClaudeCodeConfig";
 
-type TestKey = "kitty" | "deepseek" | "elevenlabs" | "anthropic";
+type TestKey = "kitty" | "deepseek" | "elevenlabs" | "agent";
 
 // Per-field overrides for friendlier copy in the secret-key inputs.
 const FIELD_OVERRIDES: Record<string, { label?: string; help?: string }> = {
@@ -354,7 +354,7 @@ function sectionTestKey(title: string): TestKey | null {
   if (title.includes("Kitty")) return "kitty";
   if (title.includes("DeepSeek")) return "deepseek";
   if (title.includes("ElevenLabs")) return "elevenlabs";
-  if (title.includes("agent") || title.includes("Codex") || title.includes("Claude") || title.includes("Anthropic")) return "anthropic";
+  if (title.includes("agent") || title.includes("Codex") || title.includes("Claude") || title.includes("Anthropic")) return "agent";
   return null;
 }
 

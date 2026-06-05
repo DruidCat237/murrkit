@@ -7,7 +7,8 @@ Endpoints:
     POST  /api/config/test/kitty        — ping Kitty App backend with a tiny prompt
     POST  /api/config/test/deepseek     — ping DeepSeek with a 4-token prompt
     POST  /api/config/test/elevenlabs   — ping ElevenLabs voices endpoint
-    POST  /api/config/test/anthropic    — invoke configured local agent CLI `--version`
+    POST  /api/config/test/agent        — invoke configured local agent CLI `--version`
+    POST  /api/config/test/anthropic    — legacy alias for /test/agent
     POST  /api/config/test/unity_mcp    — ping http://127.0.0.1:8080 or stdio probe
     POST  /api/config/reload            — best-effort: instruct uvicorn worker to
                                           reload (returns hint to user)
@@ -19,6 +20,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -109,6 +111,12 @@ def _read_env_file() -> dict[str, str]:
         k, _, v = s.partition("=")
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def _codex_auth_file_present() -> bool:
+    """Best-effort Codex login readiness without reading or exposing secrets."""
+    home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    return (home / "auth.json").is_file()
 
 
 def _atomic_write_env(values: dict[str, str]) -> None:
@@ -462,19 +470,22 @@ async def test_anthropic() -> TestResult:
         elapsed = int((time.time() - t0) * 1000)
         out = (result.stdout or result.stderr or b"").decode("utf-8", errors="replace").strip()[:200]
         auth_mode = "subscription (Pro/Max)"
+        auth_ready = True
         if agent == "claude" and (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
             auth_mode = "API ($ANTHROPIC_API_KEY)"
         elif agent == "codex":
-            auth_mode = "Codex login"
+            auth_ready = _codex_auth_file_present()
+            auth_mode = "Codex login detected" if auth_ready else "Codex login not detected"
         version = out.split()[-1] if out else "?"
         return TestResult(
-            ok=result.returncode == 0,
+            ok=result.returncode == 0 and auth_ready,
             detail=f"{agent} CLI {version} | auth={auth_mode}",
             elapsed_ms=elapsed,
             extra={
                 "cli_path": cli,
                 "version": version,
                 "agent": agent,
+                "auth_ready": auth_ready,
                 "mode": (
                     "api"
                     if agent == "claude" and (env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
@@ -497,6 +508,12 @@ async def test_anthropic() -> TestResult:
             elapsed_ms=int((time.time() - t0) * 1000),
             extra={"cli_path": cli},
         )
+
+
+@router.post("/test/agent", response_model=TestResult)
+async def test_agent() -> TestResult:
+    """Neutral alias for the configured local agent CLI probe."""
+    return await test_anthropic()
 
 
 @router.post("/test/unity_mcp", response_model=TestResult)

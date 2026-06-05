@@ -92,7 +92,7 @@ export default function FirstRunSetup() {
           const configuredAgent = cfg.fields.find((f) => f.key === "MURRKIT_AGENT_CLI");
           const nextAgent = configuredAgent?.value === "codex" ? "codex" : "claude";
           setAgentCli(nextAgent);
-          const agent = await testEndpoint("anthropic").catch(() => null);
+          const agent = await testEndpoint("agent").catch(() => null);
           if (!alive) return;
           const kitty = cfg.fields.find((f) => f.key === "KITTY_APP_TOKEN");
           const kSet = !!kitty?.is_set;
@@ -113,14 +113,19 @@ export default function FirstRunSetup() {
   }, [hydrated, onboardingDone, setOnboardingDone]);
 
   async function setAgent(next: AgentCli) {
+    const previous = agentCli;
     setAgentCli(next);
     setBusy("agent");
     try {
-      await updateConfig({ MURRKIT_AGENT_CLI: next }).catch(() => null);
+      await updateConfig({ MURRKIT_AGENT_CLI: next });
       window.dispatchEvent(new CustomEvent("murrkit:agent-cli-changed", { detail: { agent: next } }));
-      const r = await testEndpoint("anthropic").catch(() => null);
+      const r = await testEndpoint("agent").catch(() => null);
       setAgentOk(!!r?.ok);
       setAgentDetail(r?.detail ?? "");
+    } catch (e) {
+      setAgentCli(previous);
+      setAgentOk(false);
+      setAgentDetail(`Could not save ${next} runtime: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy("");
     }
@@ -128,7 +133,7 @@ export default function FirstRunSetup() {
 
   async function recheckAgent() {
     setBusy("agent");
-    const r = await testEndpoint("anthropic").catch(() => null);
+    const r = await testEndpoint("agent").catch(() => null);
     setAgentOk(!!r?.ok);
     setAgentDetail(r?.detail ?? "");
     setBusy("");

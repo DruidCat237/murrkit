@@ -48,18 +48,18 @@ export default function ClaudeCodeConfig() {
   async function refresh() {
     setBusy(true);
     try {
-      const [anthropic, skills] = await Promise.all([
-        testEndpoint("anthropic").catch(() => null),
+      const [agentStatus, skills] = await Promise.all([
+        testEndpoint("agent").catch(() => null),
         fetch(`${BACKEND}/api/chat/skills`).then((r) => r.json()).catch(() => []),
       ]);
-      if (anthropic) {
+      if (agentStatus) {
         setStatus({
-          ok: anthropic.ok,
-          agent: anthropic.extra?.agent as "codex" | "claude" | undefined,
-          cli_path: anthropic.extra?.cli_path as string | undefined,
-          version: anthropic.extra?.version as string | undefined,
-          mode: (anthropic.extra?.mode as "subscription" | "api" | undefined) ?? "subscription",
-          detail: anthropic.detail,
+          ok: agentStatus.ok,
+          agent: agentStatus.extra?.agent as "codex" | "claude" | undefined,
+          cli_path: agentStatus.extra?.cli_path as string | undefined,
+          version: agentStatus.extra?.version as string | undefined,
+          mode: (agentStatus.extra?.mode as "subscription" | "api" | undefined) ?? "subscription",
+          detail: agentStatus.detail,
         });
       }
       if (Array.isArray(skills)) {
@@ -85,9 +85,16 @@ export default function ClaudeCodeConfig() {
   async function setAgent(agent: "claude" | "codex") {
     setBusy(true);
     try {
-      await updateConfig({ MURRKIT_AGENT_CLI: agent }).catch(() => null);
+      await updateConfig({ MURRKIT_AGENT_CLI: agent });
       window.dispatchEvent(new CustomEvent("murrkit:agent-cli-changed", { detail: { agent } }));
       await refresh();
+    } catch (e) {
+      await refresh().catch(() => undefined);
+      setStatus((prev) => ({
+        ...(prev ?? { ok: false }),
+        ok: false,
+        detail: `Failed to save ${agent} runtime: ${e instanceof Error ? e.message : String(e)}`,
+      }));
     } finally {
       setBusy(false);
     }
@@ -192,12 +199,12 @@ export default function ClaudeCodeConfig() {
               {
                 id: "claude_sonnet",
                 label: isCodex ? "Codex Balanced" : "Sonnet",
-                desc: isCodex ? "Fast Codex route" : "Fast Claude route",
+                desc: isCodex ? "CODEX_MODEL_FAST or default" : "Fast Claude route",
               },
               {
                 id: "claude_opus",
                 label: isCodex ? "Codex Heavy" : "Opus",
-                desc: isCodex ? "Heavy Codex route" : "Most capable Claude route",
+                desc: isCodex ? "CODEX_MODEL_HEAVY or default" : "Most capable Claude route",
               },
               { id: "deepseek_v4", label: "DeepSeek V4", desc: "Cheap fallback" },
             ] as const).map((m) => (

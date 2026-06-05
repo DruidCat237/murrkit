@@ -74,6 +74,14 @@ MURRKIT_AGENT_CLI=claude   # or: codex
 
 murrkit auto-detects the selected binary and shows its status in **Settings → Local Agent**.
 
+Codex mode uses the same captain prompt and gates as Claude Code. It keeps its
+own per-project resume session (`codex:<project>`), attaches current chat
+images plus persistent reference images/keyframes as native Codex `--image`
+inputs, and injects the Playwright MCP config into each `codex exec` run without
+mutating your global Codex config. If `CODEX_MODEL_FAST` or
+`CODEX_MODEL_HEAVY` are blank, those UI routes fall back to your configured
+Codex default model.
+
 ---
 
 ## 2 · Get your Kitty API token (image generation)
@@ -144,6 +152,10 @@ Everything lives in `.env` (copied from `.env.example`, never committed). You ca
 | `MURRKIT_AGENT_CLI` | Local captain runtime: `claude` or `codex` | default `claude` | Setup screen |
 | `CLAUDE_CLI_BIN` | Claude Code binary path/name | optional | default `claude` |
 | `CODEX_CLI_BIN` | Codex CLI binary path/name | optional | default `codex` |
+| `CODEX_MODEL_FAST` | Codex model for the Balanced route | optional | blank = Codex default |
+| `CODEX_MODEL_HEAVY` | Codex model for the Heavy route | optional | blank = Codex default |
+| `CODEX_SANDBOX` | Codex exec sandbox | optional | default `workspace-write` |
+| `CODEX_APPROVAL_POLICY` | Nested Codex approval policy | optional | default `never` |
 | `DEEPSEEK_API_KEY` | Cheap code reasoning + log triage | optional | [platform.deepseek.com](https://platform.deepseek.com) |
 | `GEMINI_API_KEY` | Vision QA / compare-to-reference gate | optional | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
 | `ELEVENLABS_API_KEY` | Sound effects / music | optional | [elevenlabs.io](https://elevenlabs.io) |

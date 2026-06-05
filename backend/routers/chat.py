@@ -1,13 +1,12 @@
 """
 Chat router — multi-model chat orchestrator for murrkit.
 
-Supports three model backends, picked client-side:
+Supports three model routes, picked client-side:
     - deepseek_v4    — cheap streaming chat (text-only) via /chat/completions
-    - claude_sonnet  — Claude Code CLI subprocess in bypassPermissions mode
-                       (default for orchestration; sees CLAUDE.md, MCP servers,
-                       skills via .claude/skills)
-    - claude_opus    — Claude Code CLI pinned to --model claude-opus-4-8 (heavy,
-                       for complex multi-step game-dev tasks)
+    - claude_sonnet  — default local captain route; maps to Claude Sonnet under
+                       Claude Code or Codex Balanced under Codex
+    - claude_opus    — heavy local captain route; maps to Claude Opus under
+                       Claude Code or Codex Heavy under Codex
 
 Endpoints
     POST  /api/chat/send                    — synchronous (DeepSeek only) — returns
@@ -150,13 +149,13 @@ class _Task:
 
 _tasks: dict[str, _Task] = {}
 
-# Per-project Claude CLI session_id, captured from the first `system` event of
-# every successful stream. Passed back as `--resume <sid>` on subsequent turns
-# so Claude actually sees the prior conversation. Cleared on /clear.
+# Per-project local-agent session_id, captured from successful CLI events.
+# Passed back on subsequent turns so the captain actually sees the prior
+# conversation. Cleared on /clear.
 #
 # Persisted to .omc/state/sessions.json via core.project_memory so a backend
 # restart no longer orphans every conversation (the next turn used to start a
-# brand-new Claude session with no memory of the design/assets/bugs). Loaded
+# brand-new session with no memory of the design/assets/bugs). Loaded
 # once on import here; every capture site below mirrors the update to disk.
 from core import project_memory as _project_memory  # noqa: E402
 
@@ -325,10 +324,11 @@ async def clear_history(project_name: str = "default") -> dict[str, Any]:
             "DELETE FROM chat_messages WHERE project_name = ?", (project_name,)
         )
         n = cur.rowcount
-    # Drop the Claude session id too so the next message starts a fresh thread
+    # Drop local-agent session ids too so the next message starts a fresh thread
     # instead of resuming the wiped conversation. Mirror to disk so the wipe
     # survives a restart.
     _session_by_project.pop(project_name, None)
+    _session_by_project.pop(_session_storage_key(project_name, "codex"), None)
     _project_memory.save_sessions(_session_by_project)
     return {"deleted": n, "project_name": project_name}
 
@@ -992,17 +992,28 @@ def _agent_cli_path() -> str | None:
 _PLAYTEST_MCP_CONFIG = PROJECT_ROOT / "backend" / "playtest_mcp.json"
 
 
+def _playtest_mcp_command_args() -> tuple[str, list[str]]:
+    """Return a platform-correct Playwright MCP command for local captain runs."""
+    out_dir = PROJECT_ROOT / "public_files" / "playtest_mcp"
+    args = [
+        "-y", "@playwright/mcp@latest",
+        "--headless", "--isolated", "--caps", "vision",
+        "--viewport-size", "1280,720",
+        "--output-dir", str(out_dir),
+    ]
+    if os.name == "nt":
+        return "cmd", ["/c", "npx", *args]
+    return "npx", args
+
+
 def _write_playtest_mcp_config() -> None:
     """(Re)generate playtest_mcp.json with a PROJECT_ROOT-derived --output-dir so it
     survives a project-folder rename (no hardcoded absolute path left to go stale)."""
     try:
         out_dir = PROJECT_ROOT / "public_files" / "playtest_mcp"
         out_dir.mkdir(parents=True, exist_ok=True)
-        cfg = {"mcpServers": {"playwright": {"command": "cmd", "args": [
-            "/c", "npx", "-y", "@playwright/mcp@latest",
-            "--headless", "--isolated", "--caps", "vision",
-            "--viewport-size", "1280,720", "--output-dir", str(out_dir),
-        ]}}}
+        command, args = _playtest_mcp_command_args()
+        cfg = {"mcpServers": {"playwright": {"command": command, "args": args}}}
         _PLAYTEST_MCP_CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     except Exception:  # noqa: BLE001 — a missing config just degrades to "no browser tools"
         pass
@@ -1018,6 +1029,17 @@ def _maybe_playtest_mcp_args() -> list[str]:
     return []
 
 
+def _codex_playtest_mcp_config_args() -> list[str]:
+    """Inline Playwright MCP config for Codex exec without mutating Codex globals."""
+    if not _PLAYTEST_MCP_CONFIG.is_file():
+        return []
+    command, args = _playtest_mcp_command_args()
+    return [
+        "-c", f"mcp_servers.playwright.command={json.dumps(command)}",
+        "-c", f"mcp_servers.playwright.args={json.dumps(args)}",
+    ]
+
+
 def _cli_env() -> dict[str, str]:
     """Environment for the inner Claude CLI subprocess. Enables MAX-effort
     extended thinking — the user wants deep reasoning + imagination and has
@@ -1030,21 +1052,141 @@ def _cli_env() -> dict[str, str]:
     return env
 
 
-def _codex_exec_cmd(cli: str, model_choice: str = "") -> list[str]:
+def _session_storage_key(project_name: str | None, runtime: str) -> str:
+    """Key for persisted CLI session ids.
+
+    Claude keeps the legacy project-name key so existing sessions continue to
+    resume. Codex uses a runtime-prefixed key because Codex session ids are not
+    interchangeable with Claude Code session ids.
+    """
+    project = project_name or "default"
+    return project if runtime == "claude" else f"{runtime}:{project}"
+
+
+def _remember_agent_session(project_name: str | None, runtime: str, session_id: str) -> None:
+    if not project_name or not session_id:
+        return
+    key = _session_storage_key(project_name, runtime)
+    _session_by_project[key] = session_id
+    _project_memory.update_session(key, session_id)
+
+
+_IMAGE_ATTACHMENT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_CODEX_REFERENCE_IMAGE_LIMIT = 12
+
+
+def _attachment_image_paths(attachments: list[dict[str, str]] | None) -> list[str]:
+    """Return readable image paths that should be passed as native CLI images."""
+    out: list[str] = []
+    if not attachments:
+        return out
+    for att in attachments:
+        ap = att.get("abs_path") or ""
+        if not ap:
+            continue
+        p = Path(ap)
+        if p.is_file() and p.suffix.lower() in _IMAGE_ATTACHMENT_SUFFIXES:
+            out.append(str(p.resolve()))
+    return out
+
+
+def _codex_sandbox_mode() -> str:
+    value = _env_value("CODEX_SANDBOX", settings.codex_sandbox) or "workspace-write"
+    value = value.strip()
+    if value in {"read-only", "workspace-write", "danger-full-access"}:
+        return value
+    logger.warning("Invalid CODEX_SANDBOX={v}; falling back to workspace-write", v=value)
+    return "workspace-write"
+
+
+def _codex_approval_policy() -> str:
+    value = _env_value("CODEX_APPROVAL_POLICY", settings.codex_approval_policy) or "never"
+    value = value.strip()
+    if value in {"untrusted", "on-failure", "on-request", "never"}:
+        return value
+    logger.warning("Invalid CODEX_APPROVAL_POLICY={v}; falling back to never", v=value)
+    return "never"
+
+
+def _reference_image_paths(project_name: str | None) -> list[str]:
+    """Return bounded reference image paths for Codex native image input.
+
+    The prompt still lists every reference file and keyframe path. This helper
+    attaches the most recent image references natively so Codex receives the
+    same visual grounding Claude Code gets from the upstream captain workflow.
+    """
+    if not project_name:
+        return []
+    safe = "".join(c for c in project_name if c.isalnum() or c in "_-").strip("_-")
+    if not safe:
+        return []
+    ref_dir = PROJECT_ROOT / ".omc" / "references" / safe
+    if not ref_dir.is_dir():
+        return []
+
+    paths: list[Path] = []
+    for p in ref_dir.iterdir():
+        if p.is_file() and p.suffix.lower() in _IMAGE_ATTACHMENT_SUFFIXES:
+            paths.append(p)
+    for kf_dir in ref_dir.glob("*.keyframes"):
+        if not kf_dir.is_dir():
+            continue
+        paths.extend(
+            p for p in kf_dir.glob("frame_*.jpg")
+            if p.is_file()
+        )
+    paths.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return [str(p.resolve()) for p in paths[:_CODEX_REFERENCE_IMAGE_LIMIT]]
+
+
+def _codex_native_image_paths(
+    project_name: str | None,
+    attachments: list[dict[str, str]] | None,
+) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in [*_attachment_image_paths(attachments), *_reference_image_paths(project_name)]:
+        normalized = str(Path(path).resolve())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _codex_exec_cmd(
+    cli: str,
+    model_choice: str = "",
+    *,
+    project_name: str | None = None,
+    attachments: list[dict[str, str]] | None = None,
+) -> list[str]:
     """Build the non-interactive Codex command used as murrkit's captain."""
+    prior_session = (
+        _session_by_project.get(_session_storage_key(project_name, "codex"))
+        if project_name
+        else None
+    )
     cmd = [
         cli,
         "--ask-for-approval",
-        _env_value("CODEX_APPROVAL_POLICY", settings.codex_approval_policy) or "never",
+        _codex_approval_policy(),
         "exec",
+        *_codex_playtest_mcp_config_args(),
         "--json",
         "--cd",
         str(PROJECT_ROOT),
         "--sandbox",
-        _env_value("CODEX_SANDBOX", settings.codex_sandbox) or "workspace-write",
+        _codex_sandbox_mode(),
     ]
+    if prior_session:
+        cmd.append("resume")
+    for image_path in _codex_native_image_paths(project_name, attachments):
+        cmd += ["--image", image_path]
     if model_choice:
         cmd += ["--model", model_choice]
+    if prior_session:
+        cmd.append(prior_session)
     cmd.append("-")
     return cmd
 
@@ -1099,6 +1241,32 @@ def _codex_event_type(evt: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_codex_session_id(evt: dict[str, Any]) -> str:
+    """Best-effort session id extraction across Codex JSONL event shapes."""
+    candidates: list[dict[str, Any]] = [evt]
+    for key in ("msg", "event", "data", "payload", "item"):
+        nested = evt.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for payload in candidates:
+        for key in (
+            "session_id",
+            "sessionId",
+            "conversation_id",
+            "conversationId",
+            "thread_id",
+            "threadId",
+        ):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        etype = str(payload.get("type") or payload.get("kind") or payload.get("event") or "").lower()
+        value = payload.get("id")
+        if "session" in etype and isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _append_stream_text(full_text: str, text: str) -> tuple[str, str]:
     """Return (new_full_text, delta) while avoiding obvious duplicate full-message events."""
     if not text:
@@ -1113,7 +1281,12 @@ def _append_stream_text(full_text: str, text: str) -> tuple[str, str]:
 
 def _codex_tool_event(evt: dict[str, Any]) -> dict[str, Any] | None:
     etype = _codex_event_type(evt).lower()
-    if "tool" not in etype and "exec" not in etype and "command" not in etype:
+    if (
+        "tool" not in etype
+        and "exec" not in etype
+        and "command" not in etype
+        and "function" not in etype
+    ):
         return None
 
     payload = evt.get("msg") if isinstance(evt.get("msg"), dict) else evt
@@ -1144,10 +1317,11 @@ def _codex_tool_event(evt: dict[str, Any]) -> dict[str, Any] | None:
     return {"kind": "tool_use", "id": event_id, "name": str(name), "args_summary": summary}
 
 
-def _collect_codex_result(stdout: bytes) -> str:
-    """Extract the final assistant text from Codex JSONL or plain stdout."""
+def _collect_codex_result(stdout: bytes) -> tuple[str, str]:
+    """Extract the final assistant text and session id from Codex JSONL/plain stdout."""
     raw = stdout.decode("utf-8", errors="replace")
     full_text = ""
+    session_id = ""
     parsed_any = False
     for line in raw.splitlines():
         line = line.strip()
@@ -1158,9 +1332,12 @@ def _collect_codex_result(stdout: bytes) -> str:
         except json.JSONDecodeError:
             continue
         parsed_any = True
+        sid = _extract_codex_session_id(evt)
+        if sid:
+            session_id = sid
         text = _text_from_jsonish(evt)
         full_text, _ = _append_stream_text(full_text, text)
-    return full_text or ("" if parsed_any else raw.strip())
+    return full_text or ("" if parsed_any else raw.strip()), session_id
 
 
 async def _run_codex_cli(
@@ -1174,11 +1351,19 @@ async def _run_codex_cli(
     if cli is None:
         return ("[Codex CLI not installed or not on PATH. Install/open Codex Desktop first.]", 0.0)
 
-    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
-    cmd = _codex_exec_cmd(cli, model_choice=model_choice)
+    prompt = _build_captain_prompt(user_text, attachments, project_name=project_name)
+    cmd = _codex_exec_cmd(
+        cli,
+        model_choice=model_choice,
+        project_name=project_name,
+        attachments=attachments,
+    )
     logger.info(
-        "Codex CLI (non-stream): model={m} prompt_chars={pc} via=stdin",
-        m=model_choice or "(config default)", pc=len(prompt),
+        "Codex CLI (non-stream): model={m} resume={r} images={i} prompt_chars={pc} via=stdin",
+        m=model_choice or "(config default)",
+        r=_session_by_project.get(_session_storage_key(project_name, "codex")) or "(new session)",
+        i=len(_codex_native_image_paths(project_name, attachments)),
+        pc=len(prompt),
     )
     result = await asyncio.to_thread(
         subprocess.run,
@@ -1193,7 +1378,9 @@ async def _run_codex_cli(
     if result.returncode != 0:
         err = result.stderr.decode("utf-8", errors="replace")[:800]
         return (f"[Codex CLI exit {result.returncode}: {err}]", 0.0)
-    return _collect_codex_result(result.stdout), 0.0
+    text, sid = _collect_codex_result(result.stdout)
+    _remember_agent_session(project_name, "codex", sid)
+    return text, 0.0
 
 
 async def _run_claude_cli(
@@ -1214,7 +1401,7 @@ async def _run_claude_cli(
     cli = _claude_cli_path()
     if cli is None:
         return ("[Claude CLI not installed — install from https://docs.claude.com/en/docs/claude-code/quickstart]", 0.0)
-    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
+    prompt = _build_captain_prompt(user_text, attachments, project_name=project_name)
     cmd = [
         cli, "--print",
         "--output-format", "json",
@@ -1228,7 +1415,7 @@ async def _run_claude_cli(
         cmd += ["--resume", prior_session]
     # See `_stream_claude_cli` for the long-form rationale — pipe prompt via
     # stdin to dodge Windows' CreateProcess 32 KB command-line cap that hits
-    # when _build_claude_prompt injects all the captain/asset/Qwen rules.
+    # when _build_captain_prompt injects all the captain/asset/Qwen rules.
     logger.info(
         "Claude CLI (non-stream): model={m} resume={r} prompt_chars={pc} via=stdin",
         m=model_choice, r=prior_session or "(new session)", pc=len(prompt),
@@ -1259,8 +1446,7 @@ async def _run_claude_cli(
     # Persist to disk too so the resume survives a backend restart.
     sid = data.get("session_id") or ""
     if sid and project_name:
-        _session_by_project[project_name] = sid
-        _project_memory.update_session(project_name, sid)
+        _remember_agent_session(project_name, "claude", sid)
     text = data.get("result") or data.get("text") or ""
     cost = float(data.get("cost_usd", 0.0))
     budget.charge(cost)
@@ -1285,11 +1471,20 @@ async def _stream_codex_cli(
         }
         return
 
-    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
-    cmd = _codex_exec_cmd(cli, model_choice=model_choice)
+    prompt = _build_captain_prompt(user_text, attachments, project_name=project_name)
+    cmd = _codex_exec_cmd(
+        cli,
+        model_choice=model_choice,
+        project_name=project_name,
+        attachments=attachments,
+    )
     logger.info(
-        "Codex CLI (stream): model={m} cwd={c} prompt_chars={pc} via=stdin",
-        m=model_choice or "(config default)", c=PROJECT_ROOT, pc=len(prompt),
+        "Codex CLI (stream): model={m} cwd={c} resume={r} images={i} prompt_chars={pc} via=stdin",
+        m=model_choice or "(config default)",
+        c=PROJECT_ROOT,
+        r=_session_by_project.get(_session_storage_key(project_name, "codex")) or "(new session)",
+        i=len(_codex_native_image_paths(project_name, attachments)),
+        pc=len(prompt),
     )
     try:
         proc = subprocess.Popen(
@@ -1369,6 +1564,15 @@ async def _stream_codex_cli(
                 continue
 
             etype = _codex_event_type(evt).lower()
+            sid = _extract_codex_session_id(evt)
+            if sid and project_name:
+                _remember_agent_session(project_name, "codex", sid)
+                if "system" in etype or "session" in etype:
+                    yield {
+                        "kind": "system",
+                        "subtype": etype or "codex_session",
+                        "session_id": sid,
+                    }
             if "error" in etype:
                 yield {"kind": "error", "error": _text_from_jsonish(evt) or json.dumps(evt)[:300]}
                 continue
@@ -1537,7 +1741,7 @@ async def _stream_claude_cli(
         }
         return
 
-    prompt = _build_claude_prompt(user_text, attachments, project_name=project_name)
+    prompt = _build_captain_prompt(user_text, attachments, project_name=project_name)
     cmd = [
         cli, "--print",
         "--output-format", "stream-json",
@@ -1662,8 +1866,7 @@ async def _stream_claude_cli(
                 # Remember per-project so the next turn uses --resume; persist
                 # to disk so the resume survives a backend restart.
                 if sid and project_name:
-                    _session_by_project[project_name] = sid
-                    _project_memory.update_session(project_name, sid)
+                    _remember_agent_session(project_name, "claude", sid)
                 yield {
                     "kind": "system",
                     "subtype": evt.get("subtype", ""),
@@ -2293,7 +2496,7 @@ def _memory_prompt_snippet(project: str) -> str:
             lines.append(f"  - [{level}] {text[:240]}")
         lines.append("")
 
-    # Always tell Claude to keep the progress doc current as it works.
+    # Always tell the local captain to keep the progress doc current as it works.
     lines += [
         "### Keep memory updated (HARD)",
         f"As you make design decisions, finish work, or discover bugs, KEEP "
@@ -2306,7 +2509,7 @@ def _memory_prompt_snippet(project: str) -> str:
     return "\n".join(lines)
 
 
-def _build_claude_prompt(
+def _build_captain_prompt(
     user_text: str,
     attachments: list[dict[str, str]] | None,
     *,
@@ -2326,7 +2529,7 @@ def _build_claude_prompt(
 
     # ---- Auto-inject user reference materials (.omc/references/<project>/) ----
     # If the user dropped images/videos/docs into the References panel,
-    # tell Claude about them up-front so he uses them as ground-truth
+    # tell the captain about them up-front so it uses them as ground-truth
     # instead of guessing from text descriptions.
     try:
         from backend.routers.references import system_prompt_snippet as _refs_snippet
@@ -2337,7 +2540,7 @@ def _build_claude_prompt(
         pass  # references router optional / soft-fail
 
     # ---- Auto-inject persisted memory (progress.md + failure-log tail) ----
-    # Same mechanism as the references injection above: give the inner Claude
+    # Same mechanism as the references injection above: give the local captain
     # the project's accumulated state every turn so it resumes with real
     # context (design decisions, what's done, open bugs) and doesn't repeat
     # logged mistakes. See core/project_memory.py.

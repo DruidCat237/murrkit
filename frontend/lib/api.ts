@@ -408,7 +408,7 @@ export async function updateConfig(
 }
 
 export async function testEndpoint(
-  which: "kitty" | "deepseek" | "elevenlabs" | "anthropic" | "unity_mcp"
+  which: "kitty" | "deepseek" | "elevenlabs" | "agent" | "anthropic" | "unity_mcp"
 ): Promise<TestResult> {
   return post<TestResult>(`/api/config/test/${which}`, {});
 }

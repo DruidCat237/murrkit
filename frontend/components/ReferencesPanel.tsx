@@ -2,14 +2,14 @@
 
 /**
  * ReferencesPanel — persistent per-project drop zone for user reference
- * materials. Inner Claude is automatically told these files exist via
- * chat-router system prompt injection so he can read images via vision
+ * materials. The selected local captain is automatically told these files exist
+ * via chat-router system prompt injection so it can read images via vision
  * review, parse text docs, or use extracted video keyframes for
  * compare-to-reference checks.
  *
  *   ┌──────────────────────────────────────────────────────────┐
  *   │  References · AngryCat · 12 files                        │
- *   │  Inner Claude auto-aware via chat router system prompt   │
+ *   │  Selected captain auto-aware via chat router prompt      │
  *   ├──────────────────────────────────────────────────────────┤
  *   │  [Drag & drop files here, or click to browse]            │
  *   ├──────────────────────────────────────────────────────────┤
@@ -173,7 +173,7 @@ export default function ReferencesPanel({
   async function remove(entry: ReferenceFile) {
     if (
       !confirm(
-        `Delete "${entry.name}" from references? Inner Claude will lose access to this file.`,
+        `Delete "${entry.name}" from references? The selected captain will lose access to this file.`,
       )
     ) {
       return;
@@ -230,7 +230,7 @@ export default function ReferencesPanel({
 
         <div className="text-[10px] text-text-dim leading-relaxed">
           Drop reference materials here — gameplay clips, real-game screenshots,
-          mood-board images, hand sketches, design docs. Inner Claude is
+          mood-board images, hand sketches, design docs. The selected captain is
           auto-aware via the chat system prompt and uses them as ground-truth
           for design decisions. Videos auto-extract keyframes for Gemini
           compare-to-reference review.
@@ -418,7 +418,7 @@ function ReferenceCard({
           onDelete();
         }}
         className="absolute top-1 left-1 p-1 rounded bg-err/80 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-        title="Delete (Claude loses access)"
+        title="Delete (selected captain loses access)"
       >
         <Trash2 className="h-3 w-3" />
       </button>
@@ -492,7 +492,7 @@ function PreviewModal({
           )}
         </div>
         <div className="border-t border-line p-2 text-[10px] font-mono text-text-dim">
-          <span className="text-text-subtle">Path for Claude:</span> {entry.abs_path}
+          <span className="text-text-subtle">Path for captain:</span> {entry.abs_path}
           {entry.category === "video" && entry.keyframe_count !== undefined && (
             <>
               <br />
@@ -520,7 +520,7 @@ function EmptyState() {
       <div>No reference materials yet for this project.</div>
       <div className="text-text-subtle text-[10px] leading-relaxed max-w-md mx-auto">
         Drop a real-game screenshot, a gameplay clip, a hand-drawn level sketch,
-        or a design doc. Inner Claude is auto-told these files exist and uses
+        or a design doc. The selected captain is auto-told these files exist and uses
         them via Gemini compare-to-reference reviews.
       </div>
     </div>

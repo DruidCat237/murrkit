@@ -3,17 +3,17 @@ Persistent project memory for the murrkit orchestrator.
 
 Three responsibilities, all backed by `.omc/state/`:
 
-1. **Session map** — the per-project Claude CLI `session_id` used for
-   `--resume`. `chat.py` previously held this only in RAM
+1. **Session map** — the per-project local-agent CLI `session_id` used for
+   resume continuity. `chat.py` previously held this only in RAM
    (`_session_by_project`), so a backend restart silently orphaned every
-   conversation: the next turn started a brand-new Claude session with no
+   conversation: the next turn started a brand-new agent session with no
    memory of the design, the assets, or the open bugs. We now mirror that
    dict to `.omc/state/sessions.json` (load-on-import, save-on-update) so
    continuity survives restarts.
 
 2. **Progress doc** — `.omc/state/<project>/progress.md`: a human- and
    model-readable log of design decisions, what's done, and open bugs.
-   Auto-injected into the system prompt every turn so the inner Claude
+   Auto-injected into the system prompt every turn so the local captain
    resumes with real context instead of re-deriving it.
 
 3. **Failure-log tail** — the last N entries of the project-wide
@@ -59,7 +59,7 @@ def progress_path(project: str) -> Path:
 def design_path(project: str) -> Path:
     """Absolute path to a project's approved `design.md` GDD (not created here).
 
-    The GDD gate in the system prompt instructs the inner Claude to persist
+    The GDD gate in the system prompt instructs the local captain to persist
     the user-APPROVED Game Design Doc here before writing any game code.
     """
     return _project_state_dir(project) / "design.md"
@@ -69,7 +69,7 @@ def design_path(project: str) -> Path:
 
 
 def load_sessions() -> dict[str, str]:
-    """Load the persisted {project: claude_session_id} map.
+    """Load the persisted {project_or_runtime_project: session_id} map.
 
     Returns an empty dict when the file is absent or unreadable — a missing
     cache is simply "no prior sessions", which is correct on first run.

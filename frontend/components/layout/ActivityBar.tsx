@@ -93,7 +93,7 @@ export default function ActivityBar() {
         <button
           onClick={() => openCenterTab("references")}
           className={`activity-icon ${refsTabActive ? "active" : ""}`}
-          title="References — gameplay clips, real-game screenshots, mood-board, sketches. Inner Claude auto-aware."
+          title="References — gameplay clips, real-game screenshots, mood-board, sketches. Selected captain auto-aware."
           aria-label="References"
           aria-pressed={refsTabActive}
         >
