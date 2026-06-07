@@ -1,0 +1,11 @@
+# murrkit-desktop is a SEPARATE project from the murrkit repo. If you ever
+# `git init` this folder, these keep build output + deps out of version control.
+node_modules/
+release/
+dist/
+out/
+*.log
+
+# Electron / electron-builder local caches (usually in the user profile, but
+# just in case any land here)
+.cache/

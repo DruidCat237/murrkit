@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>murrkit — waiting</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%;
+        background: #0b0b0f; color: #e8e8ee;
+        font: 14px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      .wrap {
+        height: 100%; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px; padding: 32px; text-align: center;
+      }
+      .logo { font-size: 40px; }
+      h1 { margin: 0; font-size: 20px; font-weight: 700; }
+      p { margin: 0; color: #a0a0ad; max-width: 460px; }
+      .spinner {
+        width: 26px; height: 26px; border-radius: 50%;
+        border: 3px solid #26262e; border-top-color: #7c9cff; animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      code {
+        background: #16161c; border: 1px solid #26262e; border-radius: 6px;
+        padding: 2px 6px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px;
+      }
+      .hint {
+        margin-top: 8px; text-align: left; background: #121218; border: 1px solid #23232b;
+        border-radius: 10px; padding: 14px 16px; max-width: 520px;
+      }
+      .hint div { color: #c8c8d2; margin: 3px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="logo">🐱</div>
+      <div class="spinner"></div>
+      <h1>Starting murrkit…</h1>
+      <p>Booting the local servers for you — the first launch can take a minute. This window connects automatically the moment the dashboard at <code>http://localhost:3001</code> is ready.</p>
+      <div class="hint">
+        <div>Not starting on its own? Open a terminal in the murrkit repo and run:</div>
+        <div>1 · <code>uv run uvicorn backend.main:app --port 8001</code></div>
+        <div>2 · <code>cd frontend &amp;&amp; npm run dev</code></div>
+        <div>3 · <code>cd phaser_game &amp;&amp; npm run dev</code></div>
+      </div>
+    </div>
+  </body>
+</html>

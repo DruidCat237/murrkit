@@ -34,6 +34,10 @@ frontend/out/
 frontend/.turbo/
 *.tsbuildinfo
 
+# Electron desktop wrapper (desktop/) — source is tracked; build output is not
+desktop/release/
+desktop/out/
+
 # IDEs
 .vscode/
 .idea/
