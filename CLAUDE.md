@@ -117,7 +117,7 @@ cd murrkit
 uv sync
 
 # 2. Backend
-uv run uvicorn backend.main:app --port 8001
+uv run python -m uvicorn backend.main:app --port 8001
 
 # 3. Frontend (separate terminal)
 cd frontend && npm install && npm run dev

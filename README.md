@@ -124,7 +124,7 @@ murrkit is three local servers. Open three terminals (or run `scripts/dev.ps1` /
 
 ```bash
 # Terminal 1 — backend (FastAPI orchestrator)
-uv run uvicorn backend.main:app --port 8001
+uv run python -m uvicorn backend.main:app --port 8001
 
 # Terminal 2 — dashboard (Next.js)
 cd frontend && npm run dev          # → http://localhost:3001

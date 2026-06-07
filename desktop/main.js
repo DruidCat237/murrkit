@@ -126,6 +126,19 @@ function spawnServer(label, command, cwd) {
   }
 }
 
+// Prefer the project venv's Python for the backend — avoids the `uv` trampoline,
+// which fails to canonicalize its script path when spawned from a GUI app on
+// Windows ("uv trampoline failed to canonicalize script path"). Falls back to
+// `uv run` only if no .venv is present (run `uv sync` once to create it).
+function backendCmd(home) {
+  const py =
+    process.platform === "win32"
+      ? path.join(home, ".venv", "Scripts", "python.exe")
+      : path.join(home, ".venv", "bin", "python");
+  if (fs.existsSync(py)) return `"${py}" -m uvicorn backend.main:app --port 8001`;
+  return "uv run uvicorn backend.main:app --port 8001";
+}
+
 async function maybeStartServers() {
   if (!MURRKIT_HOME) {
     console.warn("murrkit repo not found — skipping auto-start (manual instructions shown).");
@@ -133,7 +146,7 @@ async function maybeStartServers() {
   }
   // Already running? Don't double-spawn (the user may have started them by hand).
   if (await dashboardReachable()) return;
-  spawnServer("backend", "uv run uvicorn backend.main:app --port 8001", MURRKIT_HOME);
+  spawnServer("backend", backendCmd(MURRKIT_HOME), MURRKIT_HOME);
   spawnServer("frontend", "npm run dev", path.join(MURRKIT_HOME, "frontend"));
   spawnServer("phaser", "npm run dev", path.join(MURRKIT_HOME, "phaser_game"));
 }

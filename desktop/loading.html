@@ -43,7 +43,7 @@
       <p>Booting the local servers for you — the first launch can take a minute. This window connects automatically the moment the dashboard at <code>http://localhost:3001</code> is ready.</p>
       <div class="hint">
         <div>Not starting on its own? Open a terminal in the murrkit repo and run:</div>
-        <div>1 · <code>uv run uvicorn backend.main:app --port 8001</code></div>
+        <div>1 · <code>uv run python -m uvicorn backend.main:app --port 8001</code></div>
         <div>2 · <code>cd frontend &amp;&amp; npm run dev</code></div>
         <div>3 · <code>cd phaser_game &amp;&amp; npm run dev</code></div>
       </div>
