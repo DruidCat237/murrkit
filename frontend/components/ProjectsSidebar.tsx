@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Folder, FolderOpen, Plus, RefreshCcw, Trash2, Sparkles, Download } from "lucide-react";
-import { BACKEND, projectZipUrl } from "@/lib/api";
+import { BACKEND, backendReady, projectZipUrl } from "@/lib/api";
 import { toast } from "@/components/Toaster";
 import { useLayout } from "@/store/layout";
 
@@ -38,6 +38,10 @@ export default function ProjectsSidebar({
     setLoading(true);
     setError(null);
     try {
+      // Wait for the port probe before reading BACKEND. Without this, the first
+      // mount reads the *seed* URL (a possibly-stale env port) and one-shot
+      // fails with "Failed to fetch" while the real backend is on :8001.
+      await backendReady;
       const res = await fetch(`${BACKEND}/api/projects`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const list: PhaserProject[] = await res.json();

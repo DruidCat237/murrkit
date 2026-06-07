@@ -40,17 +40,19 @@ import type {
 // session. resolveBackend() is called at module init; result is cached
 // for the lifetime of the page.
 const ENV_BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL;
-// 2026-05-26: :8001 is poisoned by a leftover zombie process
-// that survived taskkill (orphan worker spawn child, kernel won't reclaim).
-// It returns 200 with stale-engine-flavored payloads, which made the dashboard
-// look like it was still talking to the old backend. Probe :8002 first so we
-// land on the actual murrkit backend. Other ports kept as fallback.
+// murrkit (the fresh post-migration project) starts cleanly on :8001 — the
+// desktop launcher hardcodes `--port 8001` and there is no Unity-era zombie
+// socket here. Probe :8001 FIRST so the first call lands on the real backend
+// in milliseconds; the higher ports stay only as a fallback for the rare case
+// where 8001 was occupied and the backend hopped upward. (Dead local ports do
+// NOT refuse fast on Windows — each can hang ~2s — so a wrong-first order
+// stalls startup for seconds.)
 const BACKEND_CANDIDATES = [
+  "http://localhost:8001",  // primary — the desktop launcher always uses this
   "http://localhost:8002",
   "http://localhost:8003",
   "http://localhost:8004",
   "http://localhost:8005",
-  "http://localhost:8001",  // last — only if every fresh port is dead
 ];
 
 /** Probe `<host>/health` synchronously-ish at startup. Returns first OK URL. */
