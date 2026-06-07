@@ -136,7 +136,9 @@ function backendCmd(home) {
       ? path.join(home, ".venv", "Scripts", "python.exe")
       : path.join(home, ".venv", "bin", "python");
   if (fs.existsSync(py)) return `"${py}" -m uvicorn backend.main:app --port 8001`;
-  return "uv run uvicorn backend.main:app --port 8001";
+  // `python -m uvicorn` (not bare `uvicorn`) so even this fallback dodges the
+  // broken uvicorn.exe console-script shim that the trampoline can't canonicalize.
+  return "uv run python -m uvicorn backend.main:app --port 8001";
 }
 
 async function maybeStartServers() {
