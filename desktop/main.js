@@ -5,15 +5,18 @@
 // terminals. It paints a loading screen instantly, spawns the servers in the
 // background, and swaps to the dashboard the moment it is reachable.
 //
-// The murrkit repo location is resolved from MURRKIT_HOME; since this app lives
-// in the repo under desktop/, the default is the parent folder. A sibling
-// "murrkit" folder is also tried. If none is found, auto-start is skipped and
-// the loading screen shows the manual commands instead.
+// Finding the murrkit repo:
+//   1. MURRKIT_HOME env var
+//   2. a folder you picked before (remembered in the app's user-data config)
+//   3. the parent folder (when run from source: desktop/ inside the repo)
+//   4. a sibling "murrkit/" folder
+// An INSTALLED build (in Program Files) doesn't sit next to the repo, so on
+// first run it asks you to point at the murrkit folder once and remembers it.
 //
 // Build output (installer, node_modules, release/) is git-ignored; only the
 // source here is versioned. Override the dashboard URL with MURRKIT_URL.
 
-const { app, BrowserWindow, shell, net } = require("electron");
+const { app, BrowserWindow, shell, net, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -21,25 +24,76 @@ const { spawn } = require("child_process");
 const DASHBOARD_URL = process.env.MURRKIT_URL || "http://localhost:3001";
 const ICON = path.join(__dirname, "icon.png");
 
-// --- Locate the murrkit repo ------------------------------------------------
-function resolveMurrkitHome() {
-  const candidates = [
-    process.env.MURRKIT_HOME,
-    path.join(__dirname, ".."),             // desktop/ lives inside the murrkit repo → parent is the repo
-    path.join(__dirname, "..", "murrkit"),  // fallback: sibling layout
-    path.join(path.dirname(__dirname), "murrkit"),
-  ].filter(Boolean);
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(path.join(c, "backend", "main.py"))) return path.resolve(c);
-    } catch {
-      /* ignore */
-    }
+// --- Remembered repo location (user-data config) ----------------------------
+function configPath() {
+  return path.join(app.getPath("userData"), "murrkit-desktop.json");
+}
+
+function isMurrkitRepo(dir) {
+  try {
+    return !!dir && fs.existsSync(path.join(dir, "backend", "main.py"));
+  } catch {
+    return false;
+  }
+}
+
+function readSavedHome() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+    if (isMurrkitRepo(cfg.murrkitHome)) return path.resolve(cfg.murrkitHome);
+  } catch {
+    /* no/invalid config yet */
   }
   return null;
 }
 
-const MURRKIT_HOME = resolveMurrkitHome();
+function saveHome(dir) {
+  try {
+    fs.writeFileSync(configPath(), JSON.stringify({ murrkitHome: dir }, null, 2));
+  } catch (e) {
+    console.error("could not save murrkit home:", e.message);
+  }
+}
+
+// --- Locate the murrkit repo ------------------------------------------------
+function resolveMurrkitHome() {
+  const candidates = [
+    process.env.MURRKIT_HOME,
+    readSavedHome(),                        // a folder the user picked before
+    path.join(__dirname, ".."),             // from source: desktop/ inside the repo
+    path.join(__dirname, "..", "murrkit"),  // sibling layout
+    path.join(path.dirname(__dirname), "murrkit"),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (isMurrkitRepo(c)) return path.resolve(c);
+  }
+  return null;
+}
+
+// First-run: ask the user where the murrkit repo is, validate, and remember it.
+async function promptForHome() {
+  const res = await dialog.showOpenDialog(win, {
+    title: "Locate your murrkit folder",
+    message: "Select your murrkit repository folder (it contains backend/, frontend/ and phaser_game/).",
+    buttonLabel: "Use this folder",
+    properties: ["openDirectory"],
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths.length) return null;
+  const picked = res.filePaths[0];
+  if (isMurrkitRepo(picked)) {
+    saveHome(picked);
+    return path.resolve(picked);
+  }
+  await dialog.showMessageBox(win, {
+    type: "error",
+    title: "Not the murrkit folder",
+    message: "That folder doesn't look like the murrkit repo (no backend/main.py inside).",
+    detail: "Pick the folder that contains backend/, frontend/ and phaser_game/.",
+  });
+  return null;
+}
+
+let MURRKIT_HOME = resolveMurrkitHome();
 
 let win = null;
 let pollTimer = null;
@@ -74,7 +128,7 @@ function spawnServer(label, command, cwd) {
 
 async function maybeStartServers() {
   if (!MURRKIT_HOME) {
-    console.warn("murrkit repo not found (set MURRKIT_HOME) — skipping auto-start.");
+    console.warn("murrkit repo not found — skipping auto-start (manual instructions shown).");
     return;
   }
   // Already running? Don't double-spawn (the user may have started them by hand).
@@ -173,10 +227,18 @@ async function pollDashboard() {
 }
 
 // --- App lifecycle ----------------------------------------------------------
-app.whenReady().then(() => {
+async function startup() {
   createWindow(); // loading screen up instantly
-  maybeStartServers(); // spawn servers in the background; pollDashboard swaps in when ready
-});
+  // If we already know where the repo is, great. Otherwise (typically an
+  // installed build) ask once and remember it — unless the dashboard is
+  // already running, in which case we just connect.
+  if (!MURRKIT_HOME && !(await dashboardReachable())) {
+    MURRKIT_HOME = await promptForHome();
+  }
+  maybeStartServers(); // spawn in the background; pollDashboard swaps in when ready
+}
+
+app.whenReady().then(startup);
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
