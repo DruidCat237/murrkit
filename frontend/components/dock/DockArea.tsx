@@ -480,7 +480,7 @@ function DockPane({
         {tabs.map((t) => (
           <div
             key={t.id}
-            className={`dock-tab ${t.id === activeTab?.id ? "active" : ""} ${overId === t.id ? "ring-1 ring-accent" : ""}`}
+            className={`dock-tab flex-1 min-w-[90px] max-w-[220px] ${t.id === activeTab?.id ? "active" : ""} ${overId === t.id ? "ring-1 ring-accent" : ""}`}
             draggable
             onDragStart={(e) => onDragStart(t.id, e)}
             onDragOver={(e) => onTabDragOver(t.id, e)}
@@ -498,7 +498,7 @@ function DockPane({
             tabIndex={0}
           >
             <TabIcon kind={t.kind} />
-            <span className="max-w-[180px] truncate">{t.title}</span>
+            <span className="flex-1 min-w-0 truncate">{t.title}</span>
             {!t.sticky && (
               <button
                 className="close ml-1 hover:text-err"
