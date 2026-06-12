@@ -20,7 +20,7 @@ import { getConfig } from "@/lib/api";
 const OPTIONS: { value: ChatModel; label: string; hint: string }[] = [
   { value: "deepseek_v4", label: "DeepSeek", hint: "Cheapest · log triage" },
   { value: "claude_sonnet", label: "Sonnet", hint: "Fast · balanced" },
-  { value: "claude_opus", label: "Opus", hint: "Default · best reasoning" },
+  { value: "claude_opus", label: "Fable 5", hint: "Default · best reasoning" },
 ];
 
 function optionsForAgent(agentCli: "claude" | "codex") {

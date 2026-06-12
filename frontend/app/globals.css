@@ -107,10 +107,37 @@ html.theme-synthwave {
 
   *, *::before, *::after { box-sizing: border-box; }
 
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-track { background: var(--bg-subtle); }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+  /* Slim, track-less scrollbars: the thumb floats with a transparent gutter
+     (background-clip trick) so panels read as content, not chrome. */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--line-strong);
+    background-clip: padding-box;
+  }
+  /* Firefox equivalent */
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+
+  /* Keyboard a11y: a clear accent ring ONLY for keyboard focus — mouse
+     clicks stay clean. Replaces the browser's default fuzzy outline. */
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
+    outline-offset: 1px;
+    border-radius: 4px;
+  }
+
+  /* Themed text selection so highlights match the active theme. */
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+    color: var(--text);
+  }
 
   /* Opt-in: scroll without a visible scrollbar. Used by the dock tab strips —
      when tabs overflow, the horizontal scrollbar thumb rendered as a stray

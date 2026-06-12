@@ -73,7 +73,7 @@ type Msg = {
 const MODEL_OPTIONS: { value: ChatModel; label: string; hint: string; tint: string }[] = [
   { value: "deepseek_v4",   label: "DeepSeek V4 Flash",  hint: "cheap, $/M",    tint: "text-blue-400" },
   { value: "claude_sonnet", label: "Claude Sonnet",  hint: "fast default route",    tint: "text-accent" },
-  { value: "claude_opus",   label: "Claude Opus",    hint: "default orchestrator", tint: "text-accent-hot" },
+  { value: "claude_opus",   label: "Fable 5",        hint: "default orchestrator", tint: "text-accent-hot" },
 ];
 
 function modelOptionsForAgent(agentCli: "claude" | "codex") {

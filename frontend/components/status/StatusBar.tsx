@@ -153,7 +153,7 @@ export default function StatusBar() {
 }
 
 function modelLabel(m: string, agentCli: "claude" | "codex"): string {
-  if (m === "claude_opus") return agentCli === "codex" ? "Codex Heavy" : "Opus 4.8";
+  if (m === "claude_opus") return agentCli === "codex" ? "Codex Heavy" : "Fable 5";
   if (m === "claude_sonnet") return agentCli === "codex" ? "Codex Balanced" : "Sonnet";
   if (m === "deepseek_v4") return "DeepSeek V4";
   return m;

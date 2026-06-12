@@ -203,7 +203,7 @@ export default function ClaudeCodeConfig() {
               },
               {
                 id: "claude_opus",
-                label: isCodex ? "Codex Heavy" : "Opus",
+                label: isCodex ? "Codex Heavy" : "Fable 5",
                 desc: isCodex ? "CODEX_MODEL_HEAVY or default" : "Most capable Claude route",
               },
               { id: "deepseek_v4", label: "DeepSeek V4", desc: "Cheap fallback" },
