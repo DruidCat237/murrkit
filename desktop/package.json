@@ -1,7 +1,7 @@
 {
   "name": "murrkit-desktop",
   "productName": "murrkit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Desktop shell (Electron) for murrkit — lives in the repo under desktop/; installer + node_modules + release output stay git-ignored.",
   "private": true,
   "main": "main.js",
