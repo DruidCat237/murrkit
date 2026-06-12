@@ -87,6 +87,7 @@ KITTY_COST_CENTS: dict[str, int] = {
 # Claude pricing — matches functions-marketing-app.php:marketing_app_pricing()
 # Per 1M tokens, USD. We apply a 50% markup (default Marketing App markup).
 CLAUDE_PRICING_USD = {
+    "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
     "claude-opus-4-7":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-haiku-4-5":  {"input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_read": 0.10},
@@ -413,7 +414,7 @@ def _estimate_chat(params: dict[str, Any]) -> CostEstimate:
     # Claude — apply markup
     claude_model = {
         "claude_sonnet": "claude-sonnet-4-6",
-        "claude_opus":   "claude-opus-4-7",
+        "claude_opus":   "claude-fable-5",  # heavy captain route = Fable 5
         "claude_haiku":  "claude-haiku-4-5",
     }.get(model, "claude-sonnet-4-6")
     rates = CLAUDE_PRICING_USD[claude_model]
@@ -545,7 +546,7 @@ def get_pricing_table() -> list[PricingEntry]:
     # Chat models — per 1K input tokens (output usually ~30-50% of input cost)
     for model_key, claude_model in [
         ("claude_sonnet", "claude-sonnet-4-6"),
-        ("claude_opus", "claude-opus-4-7"),
+        ("claude_opus", "claude-fable-5"),
         ("claude_haiku", "claude-haiku-4-5"),
     ]:
         rates = CLAUDE_PRICING_USD[claude_model]

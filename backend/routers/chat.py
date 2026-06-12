@@ -892,11 +892,13 @@ async def _stream_deepseek(
 
 # ---- Local agent CLI backend ------------------------------------------------
 
-# Model pins for the original inner game-maker Claude.  We pin the OPUS choice to the
-# exact 4.8 model ID (verified valid 2026-05-28) rather than the bare "opus"
-# alias so the inner agent never silently drifts to a different Opus build
-# mid-experiment.  Sonnet stays on the alias (cheap, always-latest is fine).
-_CLAUDE_OPUS_MODEL = "claude-opus-4-8"
+# Model pins for the original inner game-maker Claude.  We pin the heavy choice
+# to the exact Fable 5 model ID (verified valid 2026-06-12; $10/$50 per MTok,
+# 1M context) rather than a bare alias so the inner agent never silently drifts
+# to a different build mid-experiment.  The internal key stays "claude_opus"
+# for compatibility (see AGENTS.md).  Sonnet stays on the alias (cheap,
+# always-latest is fine).
+_CLAUDE_OPUS_MODEL = "claude-fable-5"
 _CLAUDE_SONNET_MODEL = "sonnet"
 
 
@@ -1049,6 +1051,14 @@ def _cli_env() -> dict[str, str]:
     reasons deeply instead of answering minimally."""
     env = os.environ.copy()
     env.setdefault("MAX_THINKING_TOKENS", "32000")
+    # API billing path: when ANTHROPIC_API_KEY is set (Settings → Local Agent,
+    # stored in .env), pass it to the CLI subprocess so the captain runs on
+    # API billing instead of the subscription. Required once a pinned model
+    # (e.g. claude-fable-5) is no longer included in the subscription plan.
+    # Without this the key saved via the Settings UI never reached the CLI.
+    api_key = _env_value("ANTHROPIC_API_KEY", "")
+    if api_key:
+        env["ANTHROPIC_API_KEY"] = api_key
     return env
 
 
@@ -1069,6 +1079,21 @@ def _remember_agent_session(project_name: str | None, runtime: str, session_id: 
     key = _session_storage_key(project_name, runtime)
     _session_by_project[key] = session_id
     _project_memory.update_session(key, session_id)
+
+
+def _forget_agent_session(project_name: str | None, runtime: str) -> None:
+    """Drop a project's saved CLI session (memory + disk).
+
+    HARDEN-8: a CLI update can invalidate old sessions — `--resume <id>` then
+    exits with no output and every subsequent turn shows "(no output from
+    Claude CLI)". Forgetting the session lets the caller retry with a fresh
+    one instead of staying wedged until someone clears it by hand.
+    """
+    if not project_name:
+        return
+    key = _session_storage_key(project_name, runtime)
+    _session_by_project.pop(key, None)
+    _project_memory.forget_session(key)
 
 
 _IMAGE_ATTACHMENT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -1433,6 +1458,21 @@ async def _run_claude_cli(
         env=_cli_env(),  # MAX-effort extended thinking
     )
     if result.returncode != 0:
+        # HARDEN-8: a stale --resume session (e.g. invalidated by a CLI
+        # update) exits non-zero with empty output. Drop it and retry once
+        # fresh — the retry can't loop because the session is now gone.
+        if prior_session:
+            logger.warning(
+                "Claude CLI resume failed (exit {rc}) — dropping session {sid} and retrying fresh",
+                rc=result.returncode, sid=prior_session,
+            )
+            _forget_agent_session(project_name, "claude")
+            return await _run_claude_cli(
+                user_text,
+                attachments=attachments,
+                model_choice=model_choice,
+                project_name=project_name,
+            )
         return (
             f"[Claude CLI exit {result.returncode}: "
             f"{result.stderr.decode('utf-8', errors='replace')[:400]}]",
@@ -2016,6 +2056,34 @@ async def _stream_claude_cli(
         final_cost = 0.0  # subscription — no $$ deducted from per-message budget
     else:
         budget.charge(final_cost)
+
+    # HARDEN-8: a stale --resume session (e.g. invalidated by a CLI update)
+    # produces an empty turn — the CLI exits without calling the model and the
+    # user sees "(no output from Claude CLI)" forever. Drop the dead session
+    # and rerun this turn fresh. No retry loop is possible: the rerun has no
+    # saved session, so this branch can't trigger again.
+    aborted = abort_event is not None and abort_event.is_set()
+    if prior_session and not full_text.strip() and not aborted:
+        logger.warning(
+            "Claude CLI resume produced no output (exit {rc}) — dropping session {sid} and retrying fresh",
+            rc=proc.returncode, sid=prior_session,
+        )
+        _forget_agent_session(project_name, "claude")
+        yield {
+            "kind": "system",
+            "subtype": "session_reset",
+            "session_id": "",
+        }
+        async for chunk in _stream_claude_cli(
+            user_text,
+            attachments=attachments,
+            model_choice=model_choice,
+            abort_event=abort_event,
+            task=task,
+            project_name=project_name,
+        ):
+            yield chunk
+        return
 
     # HARDEN-6: end-of-turn LLM-judge. If Claude paraphrased a completion
     # claim past the literal _COMPLETION_MARKERS filter (e.g. "everything

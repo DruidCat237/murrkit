@@ -119,6 +119,22 @@ def update_session(project: str, session_id: str) -> None:
     save_sessions(sessions)
 
 
+def forget_session(project: str) -> None:
+    """Drop one project's persisted session id (e.g. after a failed --resume).
+
+    A saved session can become unresumable when the agent CLI updates and
+    invalidates its on-disk session format — resuming then exits with no
+    output. Forgetting the id lets the next turn start a fresh session.
+    """
+    if not project:
+        return
+    sessions = load_sessions()
+    if project not in sessions:
+        return
+    sessions.pop(project, None)
+    save_sessions(sessions)
+
+
 # ---- 2. Progress doc -------------------------------------------------------
 
 
