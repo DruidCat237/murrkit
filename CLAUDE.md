@@ -42,7 +42,7 @@ murrkit replaced the retired Unity-based predecessor. Six architectural problems
 |-------|------|------|---------------|
 | Frontend (web UI) | Next.js 15 + Tailwind | :3001 | — |
 | Backend | FastAPI + WebSocket | :8001 (or :8002+) | — |
-| Captain / orchestrator | **Claude Code CLI** (Opus 4.8, pinned `claude-opus-4-8`) | — | subscription |
+| Captain / orchestrator | **Claude Code CLI** (Fable 5, pinned `claude-fable-5`; $10/$50 per MTok via API) | — | subscription, or API via `ANTHROPIC_API_KEY` |
 | **Game runtime** | **Phaser 3.85 + TypeScript + Vite** | :5173 | — |
 | **Headless playtest** | **Playwright** | — | — |
 | **Vision (DEFAULT)** | **Gemini 3.5 Flash** (v2 upgrade — via Kitty `/agent/chat` or direct) | — | cache $0.15/M in |

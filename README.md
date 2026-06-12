@@ -151,6 +151,7 @@ Everything lives in `.env` (copied from `.env.example`, never committed). You ca
 | `KITTY_APP_TOKEN` | Image generation (sprite sheets, tilesets, UI) | ✅ **yes** | [druidcat.app/dashboard](https://druidcat.app/dashboard) |
 | `MURRKIT_AGENT_CLI` | Local captain runtime: `claude` or `codex` | default `claude` | Setup screen |
 | `CLAUDE_CLI_BIN` | Claude Code binary path/name | optional | default `claude` |
+| `ANTHROPIC_API_KEY` | Bill the Claude captain via the Anthropic API instead of your subscription (needed when the pinned captain model isn't included in your plan) | optional | [platform.claude.com](https://platform.claude.com) |
 | `CODEX_CLI_BIN` | Codex CLI binary path/name | optional | default `codex` |
 | `CODEX_MODEL_FAST` | Codex model for the Balanced route | optional | blank = Codex default |
 | `CODEX_MODEL_HEAVY` | Codex model for the Heavy route | optional | blank = Codex default |
@@ -161,7 +162,7 @@ Everything lives in `.env` (copied from `.env.example`, never committed). You ca
 | `ELEVENLABS_API_KEY` | Sound effects / music | optional | [elevenlabs.io](https://elevenlabs.io) |
 | `BUDGET_LIMIT_USD` | Hard stop on cumulative spend | default `80` | — |
 
-> The captain is **not** an API key in `.env` — it is a separately-installed/authenticated local CLI (step 1). murrkit detects the selected runtime automatically.
+> The captain is a separately-installed/authenticated local CLI (step 1) — murrkit detects the selected runtime automatically. By default it runs on your Claude subscription login; set `ANTHROPIC_API_KEY` to switch the captain to Anthropic API billing (pay-as-you-go), which also covers models not included in your subscription plan.
 
 ---
 
