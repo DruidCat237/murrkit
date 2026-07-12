@@ -46,7 +46,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { BACKEND } from "@/lib/api";
+import { BACKEND, backendReady } from "@/lib/api";
 import type { VisionHistoryEntry, VisionProvidersInfo } from "@/lib/types";
 
 type FilterKind = "all" | "review" | "triage";
@@ -115,7 +115,9 @@ export default function VisionReviewsPanel({
 
   // ---- /providers (routing summary) ---------------------------------------
   useEffect(() => {
-    fetch(`${BACKEND}/api/vision/providers`)
+    // Gate on the port probe so BACKEND points at the real backend, not a guess.
+    backendReady
+      .then(() => fetch(`${BACKEND}/api/vision/providers`))
       .then((r) => (r.ok ? r.json() : null))
       .then(setProviders)
       .catch(() => setProviders(null));
@@ -123,12 +125,16 @@ export default function VisionReviewsPanel({
 
   // ---- WebSocket live stream ----------------------------------------------
   useEffect(() => {
-    const wsUrl = BACKEND.replace(/^http/, "ws") + "/api/vision/ws";
     let cancelled = false;
 
     function connect() {
       if (cancelled) return;
       setWsState("connecting");
+      // Recompute the URL on every (re)connect: BACKEND is a mutable export the
+      // port-probe rewrites asynchronously, so capturing it once at mount would
+      // pin a stale/guessed port and the socket would never actually connect
+      // after the backend hops. Read it fresh here.
+      const wsUrl = BACKEND.replace(/^http/, "ws") + "/api/vision/ws";
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => {
@@ -169,7 +175,9 @@ export default function VisionReviewsPanel({
       }, 25_000);
     }
 
-    connect();
+    // Wait for the port probe to resolve before the first connect so we don't
+    // burn the initial attempt on a guessed port.
+    backendReady.then(() => connect());
     return () => {
       cancelled = true;
       wsRef.current?.close();

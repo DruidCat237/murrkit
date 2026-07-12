@@ -393,7 +393,11 @@ export function openChatStream(
     }
   };
   ws.onclose = () => onClose?.();
-  ws.onerror = () => onClose?.();
+  // A failed/dropped socket fires `error` and THEN `close`. Routing both to
+  // onClose double-fires it, and any consumer that reconnects per call then
+  // doubles its attempts each round (exponential storm). `close` always
+  // follows, so a no-op here keeps onClose firing exactly once per socket.
+  ws.onerror = () => {};
   return ws;
 }
 
@@ -473,7 +477,11 @@ export function openGptImage2UsageStream(
     }
   };
   ws.onclose = () => onClose?.();
-  ws.onerror = () => onClose?.();
+  // A failed/dropped socket fires `error` and THEN `close`. Routing both to
+  // onClose double-fires it, and any consumer that reconnects per call then
+  // doubles its attempts each round (exponential storm). `close` always
+  // follows, so a no-op here keeps onClose firing exactly once per socket.
+  ws.onerror = () => {};
   return ws;
 }
 
@@ -603,7 +611,11 @@ export function openQueueWs(
     try { onEvent(JSON.parse(e.data) as QueueWsEvent); } catch { /* ignore */ }
   };
   ws.onclose = () => onClose?.();
-  ws.onerror = () => onClose?.();
+  // A failed/dropped socket fires `error` and THEN `close`. Routing both to
+  // onClose double-fires it, and any consumer that reconnects per call then
+  // doubles its attempts each round (exponential storm). `close` always
+  // follows, so a no-op here keeps onClose firing exactly once per socket.
+  ws.onerror = () => {};
   const ping = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
     else clearInterval(ping);
@@ -646,6 +658,10 @@ export function openGameBuildWs(
     try { onEvent(JSON.parse(e.data) as GameBuildWsEvent); } catch { /* ignore */ }
   };
   ws.onclose = () => onClose?.();
-  ws.onerror = () => onClose?.();
+  // A failed/dropped socket fires `error` and THEN `close`. Routing both to
+  // onClose double-fires it, and any consumer that reconnects per call then
+  // doubles its attempts each round (exponential storm). `close` always
+  // follows, so a no-op here keeps onClose firing exactly once per socket.
+  ws.onerror = () => {};
   return ws;
 }

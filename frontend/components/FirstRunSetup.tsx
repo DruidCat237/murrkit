@@ -69,6 +69,7 @@ export default function FirstRunSetup() {
   const [agentDetail, setAgentDetail] = useState("");
   const [kittySet, setKittySet] = useState<boolean | null>(null);
   const [kittyOk, setKittyOk] = useState<boolean | null>(null);
+  const [kittyErr, setKittyErr] = useState<string | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState<"" | "agent" | "kitty">("");
 
@@ -143,12 +144,20 @@ export default function FirstRunSetup() {
     const v = token.trim();
     if (!v) return;
     setBusy("kitty");
+    setKittyErr(null);
     try {
-      await updateConfig({ KITTY_APP_TOKEN: v }).catch(() => null);
+      // Do NOT swallow the write — if the .env update fails we must not flip to
+      // the green "Token saved / Ready" state (which unlocks Enter) while
+      // nothing was actually stored. Let it throw into the catch below.
+      await updateConfig({ KITTY_APP_TOKEN: v });
       const r = await testEndpoint("kitty").catch(() => null);
       setKittySet(true);
       setKittyOk(!!r?.ok);
       setToken("");
+    } catch (e) {
+      // Keep the token in the box and stay un-ready so the user can retry.
+      setKittySet(false);
+      setKittyErr((e as Error)?.message || "Couldn't write the token to .env — nothing was stored.");
     } finally {
       setBusy("");
     }
@@ -290,6 +299,11 @@ export default function FirstRunSetup() {
                 >
                   {busy === "kitty" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save & verify"}
                 </button>
+              </div>
+            )}
+            {kittyErr && !kittySet && (
+              <div className="mt-2 text-[11px] text-err">
+                Couldn&apos;t save to .env: {kittyErr} — the token was not stored, try again.
               </div>
             )}
           </StepCard>

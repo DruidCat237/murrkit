@@ -69,6 +69,10 @@ export default function CodeEditor({ initialFile }: { initialFile?: string }) {
   activePathRef.current = activePath;
   const contentsRef = useRef<string>(contents);
   contentsRef.current = contents;
+  // Monotonic token so a slow file load can't clobber a newer selection: if
+  // the user clicks file A (slow) then B (fast), B's content must win. Each
+  // pick() bumps this and bails after its await if a newer pick started.
+  const pickSeqRef = useRef(0);
 
   const toast = useToasts();
 
@@ -77,17 +81,22 @@ export default function CodeEditor({ initialFile }: { initialFile?: string }) {
   const setActiveCenterTab = useLayout((s) => s.setActiveCenterTab);
 
   const pick = useCallback(async (path: string) => {
+    const seq = ++pickSeqRef.current;
     setActivePath(path);
     setLoading(true);
     setEditBtn(null);
     try {
       const r = await readFsFile(path);
+      // A newer pick() started while this one was in flight — drop this result
+      // so we never write file A's bytes into the now-active file B.
+      if (seq !== pickSeqRef.current) return;
       setContents(r.content);
       setDirty(false);
     } catch (e) {
+      if (seq !== pickSeqRef.current) return;
       toast.error(`Failed to load ${path}`, { description: (e as Error).message });
     } finally {
-      setLoading(false);
+      if (seq === pickSeqRef.current) setLoading(false);
     }
   }, [toast]);
 

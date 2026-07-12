@@ -30,6 +30,11 @@ export default function LogViewer() {
   const [paused, setPaused] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // The WS effect runs only on [open], so ws.onmessage closes over the initial
+  // `paused` (always false) — clicking Pause re-renders but never re-binds the
+  // handler, so lines keep appending. Read the live value through a ref instead.
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     if (!open) return;
@@ -50,7 +55,7 @@ export default function LogViewer() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onmessage = (e) => {
-      if (paused) return;
+      if (pausedRef.current) return;
       try {
         const parsed = JSON.parse(e.data) as LogLine;
         setLines((prev) => {

@@ -21,8 +21,12 @@ import { useAutoFocusGenQueue } from "@/lib/useAutoFocusGenQueue";
 
 // Hotkey hints surfaced in the rail / divider tooltips. Mirror the bindings
 // installed in KeyboardShortcuts.tsx so the chrome teaches its own shortcuts.
-const HK_SIDE = "Cmd+B";
-const HK_RIGHT = "Cmd+Alt+B";
+// The binding is `mod+b`, which resolves to Ctrl off macOS. This is a
+// Windows-first app and ChatPanel already labels the same key "Ctrl", so use
+// Ctrl here too (a runtime navigator check would risk an SSR hydration
+// mismatch for the rare Mac user).
+const HK_SIDE = "Ctrl+B";
+const HK_RIGHT = "Ctrl+Alt+B";
 
 export default function MainLayout() {
   const sidePanelWidth = useLayout((s) => s.sidePanelWidth);

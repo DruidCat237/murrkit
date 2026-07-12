@@ -128,6 +128,9 @@ export default function ChatPanel({
   // so onClose never fires, busy stays true forever. Fix: track last event
   // time; if no event arrives for 60s while busy, force-finalize the turn.
   const lastEventTimeRef = useRef<number>(Date.now());
+  // Synchronous re-entry latch for send() — guards the attachment-upload window
+  // before `busy` flips true, so a double Enter can't open two captain streams.
+  const sendingRef = useRef(false);
   // Per-project local cache of the chat so navigating between panels/windows
   // (which can remount this component) never loses the last response.
   // `loadedProjectRef` gates the save effect so switching projects doesn't
@@ -368,7 +371,16 @@ export default function ChatPanel({
         (document.querySelector("[data-chat-textarea]") as HTMLTextAreaElement | null)?.focus();
       }
       if (e.key === "Escape" && activeTaskId) {
-        stop();
+        // Scope abort to when the chat input is focused. Escape is a global key
+        // (dismisses menus/modals/lightboxes elsewhere), and stop() is
+        // destructive — it kills the captain turn AND cancels every queued or
+        // in-flight gen-queue job. A stray Esc from across the app must not do
+        // that; the always-visible Stop button covers the unfocused case.
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.matches("[data-chat-textarea]")) {
+          e.preventDefault();
+          stop();
+        }
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l") {
         const active = document.activeElement as HTMLElement | null;
@@ -406,7 +418,13 @@ export default function ChatPanel({
 
   async function send() {
     const txt = input.trim();
-    if ((!txt && files.length === 0) || busy) return;
+    // `busy` only flips true AFTER the attachment upload await below, so it
+    // can't guard the upload window. sendingRef is a synchronous latch: a
+    // second Enter / Send click while a large PNG is still uploading would
+    // otherwise re-enter send() and open a SECOND captain stream for the same
+    // message. Cleared once `busy` takes over (or on an early return).
+    if ((!txt && files.length === 0) || busy || sendingRef.current) return;
+    sendingRef.current = true;
 
     // 1. Upload all attachments first
     let uploaded: ChatAttachment[] = [];
@@ -418,6 +436,7 @@ export default function ChatPanel({
         const err = e instanceof Error ? e.message : String(e);
         setMsgs((m) => [...m, { role: "agent", text: `Attachment upload failed: ${err}` }]);
         setUploadingAttachments(false);
+        sendingRef.current = false;
         return;
       }
       setUploadingAttachments(false);
@@ -452,6 +471,7 @@ export default function ChatPanel({
     const taskId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setActiveTaskId(taskId);
     setBusy(true);
+    sendingRef.current = false;  // `busy` now guards re-entry
 
     const ws = openChatStream(
       {

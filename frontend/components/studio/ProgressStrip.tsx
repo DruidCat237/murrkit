@@ -14,8 +14,9 @@
 import { useEffect, useMemo } from "react";
 import { Loader2, CheckCircle2, AlertTriangle, Sparkles } from "lucide-react";
 import { openQueueWs } from "@/lib/api";
+import { useWsStream } from "@/hooks/useWsStream";
 import { useQueue } from "@/store/queue";
-import type { QueueTask } from "@/lib/types";
+import type { QueueTask, QueueWsEvent } from "@/lib/types";
 
 export default function ProgressStrip({ projectName }: { projectName: string }) {
   const tasks = useQueue((s) => s.tasks);
@@ -24,22 +25,19 @@ export default function ProgressStrip({ projectName }: { projectName: string }) 
   const ingest = useQueue((s) => s.ingest);
   const setConnected = useQueue((s) => s.setConnected);
 
-  // Live wire to the gen-queue, scoped to this project. Mirrors GenQueuePanel.
+  // Live wire to the gen-queue, scoped to this project. Mirrors GenQueuePanel
+  // by going through useWsStream so the strip reconnects (exponential backoff)
+  // after a backend restart instead of going permanently blind — the raw
+  // useEffect socket here had no retry, so a single restart froze the Build
+  // view's activity read until a full page reload.
+  const { connected: wsConnected } = useWsStream<QueueWsEvent>(
+    (onMsg) => openQueueWs(onMsg, undefined, projectName),
+    (e) => ingest(e),
+    { reconnectKey: projectName },
+  );
   useEffect(() => {
-    const ws = openQueueWs(
-      (e) => ingest(e),
-      () => setConnected(false),
-      projectName,
-    );
-    ws.onopen = () => setConnected(true);
-    return () => {
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
-    };
-  }, [projectName, ingest, setConnected]);
+    setConnected(wsConnected);
+  }, [wsConnected, setConnected]);
 
   const mine = useMemo<QueueTask[]>(
     () =>
