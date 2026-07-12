@@ -20,7 +20,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@levels/*": ["levels/*"]
+      "@levels/*": ["levels/*"],
+      "@maps/*": ["maps/*"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts"],

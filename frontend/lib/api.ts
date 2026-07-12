@@ -33,6 +33,9 @@ import type {
   QueueWsEvent,
   GameBuild,
   GameBuildWsEvent,
+  MapDetail,
+  MapListEntry,
+  MapParseResult,
 } from "./types";
 
 // Backend URL — env var wins; otherwise probe a port range so we survive
@@ -226,26 +229,6 @@ export async function deleteProject(name: string): Promise<{ status: string; nam
   return res.json();
 }
 
-// ---- Engine ------------------------------------------------------------------
-
-export async function importSprite(
-  sourcePath: string,
-  destPath = "Assets/Sprites"
-): Promise<{ status: string }> {
-  return post<{ status: string }>("/api/unity/import-sprite", {
-    source_path: sourcePath,
-    dest_path: destPath,
-  });
-}
-
-export async function startPlayMode(durationS = 0): Promise<{ status: string }> {
-  return post<{ status: string }>("/api/unity/play-mode", { duration_s: durationS });
-}
-
-export async function stopPlayMode(): Promise<{ status: string }> {
-  return post<{ status: string }>("/api/unity/stop-play", {});
-}
-
 // ---- WebSocket ---------------------------------------------------------------
 
 export function connectProgressWs(
@@ -364,6 +347,63 @@ export async function writeFsFile(
   content: string,
 ): Promise<{ ok: boolean; path: string; bytes: number }> {
   return post<{ ok: boolean; path: string; bytes: number }>(`/api/fs/write`, { path, content });
+}
+
+// ---- Map Studio (phaser_game/maps/*.map.yaml) ---------------------------------
+
+export async function listMaps(): Promise<{ maps: MapListEntry[]; dir: string }> {
+  return get<{ maps: MapListEntry[]; dir: string }>(`/api/maps`);
+}
+
+export async function getMap(mapId: string, project?: string): Promise<MapDetail> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : "";
+  return get<MapDetail>(`/api/maps/${encodeURIComponent(mapId)}${q}`);
+}
+
+/** Validate + persist a map yaml. Backend REJECTS specs the game can't build. */
+export async function saveMap(
+  mapId: string,
+  yamlText: string,
+): Promise<{ ok: boolean; id: string; created: boolean }> {
+  await backendReady;
+  const res = await fetch(`${BACKEND}/api/maps/${encodeURIComponent(mapId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ yaml_text: yamlText }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || `PUT /api/maps/${mapId} failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Validate a yaml string without writing (live editor feedback). */
+export async function parseMap(yamlText: string): Promise<MapParseResult> {
+  return post<MapParseResult>(`/api/maps/parse`, { yaml_text: yamlText });
+}
+
+/**
+ * Stage `biome_tileset` PLANNED rows in the gen-queue (accept-gate applies —
+ * nothing is billed until the user accepts them in the Queue panel).
+ */
+export async function planBiomeTilesets(
+  project: string,
+  rows: Array<{ biome: string; prompt: string; baseImagePath?: string }>,
+): Promise<{ task_ids: string[]; count: number; total_cost_usd: number }> {
+  return post(`/api/gen-queue/plan`, {
+    project,
+    rows: rows.map((r) => ({
+      name: r.biome,
+      asset_type: "biome_tileset",
+      prompt: r.prompt,
+      workflow_id: r.baseImagePath ? "gpt-image-2-edit" : "gpt-image-2",
+      quality: "high",
+      resolution: "2K",
+      aspect_ratio: "1:1",
+      base_image_path: r.baseImagePath ?? null,
+    })),
+  });
 }
 
 /**

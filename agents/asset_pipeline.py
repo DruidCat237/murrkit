@@ -24,7 +24,7 @@ from loguru import logger
 # Types
 # ---------------------------------------------------------------------------
 
-AssetType = Literal["background", "tileset", "ui_element", "particle_fx"]
+AssetType = Literal["background", "tileset", "biome_tileset", "ui_element", "particle_fx"]
 
 
 @dataclass
@@ -100,6 +100,256 @@ def _tileset_prompt(description: str, tile_type: str) -> str:
         f"Grid layout 8x4 tiles, each tile 64x64px. "
         f"Consistent art style. Top-down or side-view game tiles. "
         f"Pixel art style, transparent or white background."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Map Studio: biome tilesets (16-tile 4×4 autotile sheet)
+# ---------------------------------------------------------------------------
+
+# Canonical role map — MUST stay in lockstep with the Phaser compiler
+# (`phaser_game/src/builders/mapSpec.ts` TILE): row-major indices of a 4×4 grid.
+BIOME_TILE_ROLES: dict[str, Any] = {
+    "TL": 0, "T": 1, "TR": 2,
+    "L": 3, "C": 4, "R": 5,
+    "BL": 6, "B": 7, "BR": 8,
+    "variants": [9, 10, 11],
+    "decor": [12, 13, 14, 15],
+}
+
+BIOME_TILESET_GRID = 4  # 4×4 cells
+
+
+def _biome_tileset_prompt(description: str, biome: str) -> str:
+    """Prompt for a 16-tile autotile sheet with per-cell role semantics.
+
+    The 3×3 block is a classic blob-lite autotile (center + 8 directional
+    edges), row 4 holds standalone decor props on flat neutral grey so the
+    rembg post-pass can mask them to alpha (GPT-Image-2 cannot emit
+    transparency itself — same trick as the character pipeline).
+    """
+    return (
+        f"2D top-down game terrain tileset for a '{biome}' biome: {description}. "
+        f"STRICT LAYOUT — a square sheet divided into a 4x4 grid of 16 equal "
+        f"square tiles, no gaps, no borders, no labels; every tile fills its "
+        f"cell edge-to-edge. "
+        f"Rows 1-3, first 3 columns form a seamless 3x3 autotile blob: the "
+        f"middle tile (row 2 col 2) is the pure interior terrain; the 8 tiles "
+        f"around it are that same terrain fading out toward the sheet-edge "
+        f"side(s) of their cell (top row fades toward the top, left column "
+        f"toward the left, corners toward both adjacent sides). "
+        f"Column 4 of rows 1-3: three interior VARIANT tiles — same terrain "
+        f"with subtle detail differences, seamlessly tileable with the middle "
+        f"tile. "
+        f"Row 4: four SEPARATE small decor props that belong to this biome "
+        f"(plant, stone, flower, debris...), each centred in its cell on a "
+        f"FLAT UNIFORM NEUTRAL GREY background, not touching cell edges. "
+        f"Consistent palette and pixel-art style across all 16 tiles, evenly "
+        f"lit, no characters, no text, no watermark."
+    )
+
+
+def _alpha_pct(png_path: Path) -> float:
+    """% pixels with alpha > 0 (validation that rembg kept the decor prop)."""
+    from agents.sprite_pipeline import _alpha_visible_pct
+    return _alpha_visible_pct(png_path)
+
+
+def _mask_decor_tiles(sheet_path: Path, tile_paths: list[Path], biome: str, tile_size: int) -> bool:
+    """SYNC worker: rembg the four decor tiles, validate each mask, paste the
+    alpha versions back into the sheet. Returns True if any cell gained alpha.
+
+    Runs via asyncio.to_thread — up to 8 rembg inferences (4 tiles × 2 model
+    fallbacks) take 15-40s, which would freeze heartbeats/WebSockets if run on
+    the event loop (the single-call character pipeline predates this rule)."""
+    import shutil
+
+    from PIL import Image
+
+    from tools.rembg_wrapper import remove_background
+
+    changed = False
+    with Image.open(sheet_path) as sheet_img:
+        sheet_img = sheet_img.convert("RGBA")
+        for idx in BIOME_TILE_ROLES["decor"]:
+            tile_path = tile_paths[idx]
+            masked = tile_path.with_name(tile_path.stem + "_alpha.png")
+            ok = False
+            for model in ("isnet-anime", "u2net"):
+                try:
+                    remove_background(tile_path, masked, model=model)
+                except Exception as e:  # noqa: BLE001 — try next model
+                    logger.warning(
+                        "biome tileset '{b}': rembg {m} failed on decor {i}: {e}",
+                        b=biome, m=model, i=idx, e=e,
+                    )
+                    continue
+                pct = _alpha_pct(masked)
+                if 2.0 <= pct <= 98.0:
+                    ok = True
+                    break
+                logger.warning(
+                    "biome tileset '{b}': rembg {m} decor {i} alpha {p:.1f}% out of range",
+                    b=biome, m=model, i=idx, p=pct,
+                )
+            if ok:
+                shutil.move(str(masked), str(tile_path))  # tiles/ gets the alpha version
+                with Image.open(tile_path) as tile_img:
+                    cx = (idx % BIOME_TILESET_GRID) * tile_size
+                    cy = (idx // BIOME_TILESET_GRID) * tile_size
+                    # Clear the cell, then paste the masked prop back in.
+                    sheet_img.paste((0, 0, 0, 0), (cx, cy, cx + tile_size, cy + tile_size))
+                    sheet_img.paste(tile_img.convert("RGBA"), (cx, cy))
+                changed = True
+            else:
+                masked.unlink(missing_ok=True)
+        if changed:
+            sheet_img.save(sheet_path)
+    return changed
+
+
+async def generate_biome_tileset(
+    description: str,
+    biome: str = "terrain",
+    *,
+    tile_size: int = 64,
+    base_image_path: Path | str | None = None,
+    transparent_decor: bool = True,
+    output_dir: Path | None = None,
+    project: str | None = None,
+) -> AssetResult:
+    """
+    Generate one biome's 16-tile autotile sheet for Map Studio.
+
+    Pipeline: prompt → GPT-Image-2 (edit-mode when `base_image_path` anchors
+    the style to an earlier biome, so a map's tilesets stay one art style) →
+    normalize to exactly 4×4 · `tile_size` px → slice into tiles/ + roles →
+    rembg ONLY the four decor cells (terrain must stay opaque) and paste the
+    alpha versions back into the sheet → write `tileset.json` → publish the
+    sheet to the stable game path
+    ``public/assets/tilesets/<project>/<biome>/sheet.png`` that
+    `maps/*.map.yaml` references (regeneration overwrites in place — the map
+    YAML never has to change).
+
+    Args:
+        description:       Theme, e.g. "lush spring meadow, soft pixel art".
+        biome:             Biome id used in map.yaml `tilesets[].biome`.
+        tile_size:         Output tile edge in px (sheet = 4×tile_size square).
+        base_image_path:   Existing sheet/atlas to anchor style via edit-mode.
+        transparent_decor: rembg the decor row to alpha (default True).
+        output_dir:        Library output dir override.
+        project:           Owning project (threads through to the public path).
+    """
+    import shutil
+
+    from PIL import Image
+
+    from tools.gpt_image_2 import (
+        submit_generate, submit_edit_from_path, poll_until_done,
+    )
+    from tools.spritesheet_splitter import split_grid
+    from agents.sprite_pipeline import (
+        _slugify, _default_output_dir, subfolder_for_role,
+    )
+    from core.config import PROJECT_ROOT
+
+    biome_slug = _slugify(biome, 20) or "biome"
+    slug = f"{biome_slug}_{_slugify(description, 20) or 'tiles'}"
+
+    if output_dir is None:
+        output_dir = _default_output_dir(subfolder_for_role("biome_tileset"), project) / slug
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt = _biome_tileset_prompt(description, biome)
+    if base_image_path:
+        logger.info("biome tileset '{b}': edit-mode from {p}", b=biome, p=base_image_path)
+        task_id = submit_edit_from_path(
+            prompt, base_image_path, "1:1", "high", "2K", project=project,
+        )
+    else:
+        task_id = submit_generate(
+            prompt=prompt, size="1:1", quality="high", resolution="2K", project=project,
+        )
+    image_url, cost = await poll_until_done(task_id)
+
+    import aiohttp
+    raw_path = output_dir / "sheet_raw.png"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(image_url) as resp:
+            raw_path.write_bytes(await resp.read())
+
+    # Normalize to EXACTLY 4·tile_size square — split_grid and the Phaser
+    # tileset math both assume uniform cells.
+    sheet_px = BIOME_TILESET_GRID * tile_size
+    sheet_path = output_dir / "sheet.png"
+    with Image.open(raw_path) as im:
+        im = im.convert("RGBA")
+        if im.size != (sheet_px, sheet_px):
+            logger.info(
+                "biome tileset '{b}': normalizing {w}×{h} → {s}×{s}",
+                b=biome, w=im.size[0], h=im.size[1], s=sheet_px,
+            )
+            im = im.resize((sheet_px, sheet_px), Image.LANCZOS)
+        im.save(sheet_path)
+
+    tiles_dir = output_dir / "tiles"
+    tiles_dir.mkdir(exist_ok=True)
+    split = split_grid(
+        sheet_path, rows=BIOME_TILESET_GRID, cols=BIOME_TILESET_GRID,
+        out_dir=tiles_dir, base_name=biome_slug,
+    )
+    tile_paths = [Path(p) for p in split["frames"]]
+
+    # Decor cells → alpha. Terrain tiles must stay opaque, so rembg runs on the
+    # four decor tiles ONLY, with the same validate-or-keep-original guard the
+    # character pipeline uses (a failed mask must not eat a paid generation).
+    # Off-thread: the inference loop is seconds-long (see _mask_decor_tiles).
+    decor_alpha = False
+    if transparent_decor:
+        import asyncio
+
+        decor_alpha = await asyncio.to_thread(
+            _mask_decor_tiles, sheet_path, tile_paths, biome, tile_size,
+        )
+
+    # Stable publish path the game loads from (vite publicDir = murrkit/public).
+    owner = (project or "").strip() or "default"
+    public_rel = f"assets/tilesets/{owner}/{biome_slug}"
+    public_dir = PROJECT_ROOT / "public" / public_rel
+    public_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = {
+        "type": "biome_tileset",
+        "biome": biome,
+        "theme": description,
+        "tile_size": tile_size,
+        "columns": BIOME_TILESET_GRID,
+        "rows": BIOME_TILESET_GRID,
+        "sheet": "sheet.png",
+        "roles": BIOME_TILE_ROLES,
+        "decor_alpha": decor_alpha,
+        "map_yaml_image": f"/{public_rel}/sheet.png",
+    }
+    meta_path = output_dir / "tileset.json"
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    shutil.copy2(sheet_path, public_dir / "sheet.png")
+    shutil.copy2(meta_path, public_dir / "tileset.json")
+
+    return AssetResult(
+        asset_type="biome_tileset",
+        name=slug,
+        output_dir=output_dir,
+        files=[sheet_path, meta_path, *tile_paths],
+        metadata={
+            "biome": biome,
+            "description": description,
+            "roles": BIOME_TILE_ROLES,
+            "decor_alpha": decor_alpha,
+            "map_yaml_image": meta["map_yaml_image"],
+            "published_dir": str(public_dir),
+        },
+        cost_usd=cost,
     )
 
 

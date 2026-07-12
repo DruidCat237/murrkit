@@ -3354,6 +3354,10 @@ def _build_captain_prompt(
         "     • particles / sparks / dust / celebration / impact FX → "
         "`particle-fx` (→ Generated/FX/)",
         "     • terrain tiles / tilesheets → `tileset` (→ Generated/Tilesets/)",
+        "     • Map Studio: one biome's 4×4 autotile sheet for a map.yaml → "
+        "`biome_tileset`, with `name` = the biome id from `tilesets[].biome` "
+        "(→ Generated/Tilesets/ + auto-published to "
+        "/assets/tilesets/<project>/<biome>/sheet.png)",
         "   So a project browser shows a clean Characters / Backgrounds / UI / "
         "FX / Tilesets separation. A volleyball is a `sprite`; the beach "
         "backdrop is a `background`; the score readout is a `ui-element` — "
@@ -3703,6 +3707,41 @@ def _build_captain_prompt(
         "If no composite exists yet for the operation you need, write it "
         "as the FIRST step instead of doing the atomic version — the "
         "composite pays for itself within the same scene.",
+        "",
+        "## Map Studio — game with a MAP = write map.yaml (HARD)",
+        "Gra potrzebuje świata/mapy (top-down RPG, zelda-like, strategy, "
+        "roguelike)? NIGDY nie układaj tili ręcznie w kodzie i NIGDY nie "
+        "generuj 'mapy' jako jednego wielkiego obrazka. Napisz "
+        "`phaser_game/maps/<id>.map.yaml` (schema: `src/builders/mapSpec.ts`) "
+        "— deterministyczny kompilator `buildMapFromYAML.ts` renderuje ją pod "
+        "`?level=<id>` jako natywny Tiled JSON w Phaserze. To jest mapowy "
+        "odpowiednik reguły 'never write scene .ts — write level YAML'.",
+        "  - Mapa gra NATYCHMIAST bez assetów: biom bez `image:` renderuje "
+        "się jako deterministyczne placeholder-kolory → zapisz YAML i od razu "
+        "playtest/screenshot (`?level=<id>`), zanim jakikolwiek tileset "
+        "powstanie. Avatar rusza się po `spawn` (WASD/strzałki), biomy z "
+        "`walkable: false` kolidują — asserts `/api/phaser/drive` działają.",
+        "  - Tileset per biom przez kolejkę: POST /api/gen-queue/plan z "
+        "rows=[{name:'<biome>', asset_type:'biome_tileset', prompt:'<theme>'}] "
+        "(accept-gate jak zawsze). Worker generuje arkusz 4×4 (9-slice "
+        "autotile + 3 warianty + 4 decory z alpha), tnie go, i publikuje pod "
+        "STABILNĄ ścieżką `/assets/tilesets/<project>/<biome>/sheet.png`.",
+        "  - Tę ścieżkę możesz wpisać w map.yaml `image:` OD RAZU (404 → "
+        "placeholder, zero crasha) — po generacji ta sama mapa sama dostaje "
+        "prawdziwą grafikę. Zero edycji YAML po fakcie.",
+        "  - Spójność stylu między biomami: pierwszy biom generuj fresh; "
+        "każdy kolejny stage'uj z workflow_id='gpt-image-2-edit' + "
+        "base_image_path = ścieżka dyskowa sheet.png pierwszego biomu "
+        "(projects/<project>/Generated/Tilesets/<slug>/sheet.png).",
+        "  - Kolejność w `tilesets` = warstwowanie: późniejszy biom leży NA "
+        "wcześniejszym (wcześniejszy rysuje edge/corner na wspólnej granicy). "
+        "Regiony w `biomes`: `rect` (drogi, jeziora, pomieszczenia) + `seed` "
+        "(Voronoi — organiczne płaty). Warianty/decory rozrzuca seedowany "
+        "PRNG — ta sama mapa buduje się bajt-w-bajt tak samo.",
+        "  - REST: GET /api/maps · GET/PUT /api/maps/<id> (PUT waliduje jak "
+        "kompilator i odrzuca zepsuty spec) · POST /api/maps/parse (walidacja "
+        "bez zapisu). Wzorzec pracy: napisz/edytuj map.yaml → playtest → "
+        "vision-gate → dopiero potem tilesety biomów przez plan/accept.",
         "",
         "## Parallel tool calling (W&D pattern) [EXP-4 PHASE D]",
         "Per arXiv 2602.07359 (W&D, 2026): width-over-depth scaling beats "

@@ -118,6 +118,8 @@ ASSET_ROLE_SUBFOLDER: dict[str, str] = {
     "fx": "FX",
     "tileset": "Tilesets",        # tiles, terrain grids
     "tile": "Tilesets",
+    "biome_tileset": "Tilesets",  # Map Studio 4×4 autotile sheets (per biome)
+    "biome-tileset": "Tilesets",
 }
 
 

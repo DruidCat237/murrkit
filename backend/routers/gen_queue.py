@@ -216,7 +216,7 @@ async def clear_finished(req: ClearRequest) -> dict[str, Any]:
 
 class PlanRow(BaseModel):
     name: str                           # short identifier shown in UI
-    asset_type: str                     # "sprite" | "background" | "tileset" | "ui-element" | "particle-fx"
+    asset_type: str                     # "sprite" | "prop" | "background" | "tileset" | "biome_tileset" | "ui-element" | "particle-fx"
     prompt: str                         # one-line prompt that will be sent to Kitty
     workflow_id: str = "gpt-image-2"    # backendId; "gpt-image-2" (fresh) | "gpt-image-2-edit" (with base_image_path)
     quality: str = "medium"             # "low" | "medium" | "high"
@@ -683,6 +683,52 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             project=t.project,
             eta_seconds=60.0,
             worker=prop_worker,
+        )
+
+    if t.asset_type in ("biome_tileset", "biome-tileset"):
+        # Map Studio: 16-tile 4×4 autotile sheet for ONE biome. The row's
+        # `name` doubles as the biome id (matches map.yaml `tilesets[].biome`);
+        # base_image_path (optional) anchors the art style to an earlier
+        # biome's sheet via edit-mode so a map's tilesets don't drift apart.
+        biome = str((t.extra or {}).get("biome") or name)
+
+        async def biome_worker(task: gq.QueueTask, handle: gq.QueueTaskHandle) -> None:
+            from agents.asset_pipeline import generate_biome_tileset
+
+            await handle.progress(5, f"generating biome tileset ({biome})")
+            await handle.start_heartbeat(
+                eta_seconds=1200.0,  # Kitty queue can sit 15-25 min
+                interval_s=4.0,
+                text_prefix=f"Kitty generating {biome} tiles",
+            )
+            result = await generate_biome_tileset(
+                task.prompt,
+                biome,
+                base_image_path=task.base_image_path,
+                project=task.project,
+            )
+            await handle.stop_heartbeat()
+            await handle.progress(95, "slicing + publishing tileset")
+            await handle.complete(
+                thumbnail_url=_thumb_url(result.files[0]) if result.files else None,
+                cost_usd=result.cost_usd,
+                extra={
+                    "asset_type": result.asset_type,
+                    "files": [str(f) for f in result.files],
+                    "biome": biome,
+                    # The one-liner the captain adds to map.yaml as `image:`.
+                    "map_yaml_image": result.metadata.get("map_yaml_image"),
+                },
+            )
+
+        return await gq.enqueue(
+            asset_type="biome_tileset",
+            prompt=t.prompt,
+            project=t.project,
+            eta_seconds=90.0,
+            worker=biome_worker,
+            extra={"name": name, "biome": biome},
+            base_image_path=t.base_image_path,
         )
 
     if t.asset_type in ("background", "tileset", "ui-element", "particle-fx"):

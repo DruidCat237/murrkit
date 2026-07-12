@@ -17,6 +17,7 @@ const GenQueuePanel = lazy(() => import("../queue/GenQueuePanel"));
 const QwenChatPanel = lazy(() => import("../QwenChatPanel"));
 const VisionReviewsPanel = lazy(() => import("../VisionReviewsPanel"));
 const ReferencesPanel = lazy(() => import("../ReferencesPanel"));
+const MapStudioPanel = lazy(() => import("../map/MapStudioPanel"));
 
 export default function CenterTabContent({ tab }: { tab: CenterTab }) {
   const projectName = useSession((s) => s.activeProject);
@@ -38,6 +39,7 @@ export default function CenterTabContent({ tab }: { tab: CenterTab }) {
           case "qwen":     return <QwenChatPanel projectName={projectName} />;
           case "vision":   return <VisionReviewsPanel projectName={projectName} />;
           case "references": return <ReferencesPanel projectName={projectName} />;
+          case "map":      return <MapStudioPanel projectName={projectName} />;
         }
       })()}
     </Suspense>

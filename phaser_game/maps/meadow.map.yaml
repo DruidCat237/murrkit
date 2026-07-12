@@ -1,0 +1,54 @@
+# meadow.map.yaml — Map Studio reference map (also the smoke-test fixture).
+#
+# Open with:  http://localhost:5173/?level=meadow
+#
+# No `image:` on any tileset yet, so every biome renders as deterministic
+# placeholder colours — the map is playable BEFORE any generation runs.
+# When the gen-queue finishes a `biome_tileset` task the sheet lands at the
+# stable path /assets/tilesets/<project>/<biome>/sheet.png; add that as
+# `image:` on the biome (one line) and the same map re-renders with real art.
+#
+# Biome layering: LATER entries in `tilesets` sit visually "on top" — along a
+# border the earlier biome draws the transition edge. Order here: grass under
+# everything, then forest, then sand paths, then water on top.
+
+id: meadow
+tileSize: 32
+width: 48
+height: 36
+seed: 20260712
+defaultBiome: grass
+
+tilesets:
+  - biome: grass
+    color: "#5da548"
+    decorDensity: 0.06        # flowers/pebbles scattered on interior cells
+  - biome: forest
+    color: "#2e6b34"
+    decorDensity: 0.18
+  - biome: sand
+    color: "#d8c07a"
+  - biome: water
+    color: "#3a76c4"
+    walkable: false           # the avatar collides with the lake
+
+biomes:
+  # Organic patches: Voronoi seeds split unclaimed ground between grass/forest.
+  - { biome: grass,  seed: [10, 24] }
+  - { biome: grass,  seed: [38, 8] }
+  - { biome: forest, seed: [40, 28] }
+  - { biome: forest, seed: [8, 6] }
+  # Deliberate shapes: rects paint over the Voronoi result (later wins).
+  - { biome: sand,  rect: [0, 16, 48, 4] }     # east-west road
+  - { biome: sand,  rect: [22, 0, 4, 36] }     # north-south road
+  - { biome: water, rect: [30, 22, 12, 9] }    # lake
+  - { biome: water, rect: [28, 24, 2, 5] }     # lake's ragged west bay
+
+objects:
+  - { name: hero_start, type: spawn, x: 6.5, y: 18 }
+  - { name: lake_marker, type: marker, x: 36, y: 26 }
+
+notes: >
+  Reference map for Map Studio: four biomes, roads crossing a lake shore,
+  spawn on the west road. Regenerate looks: bump `seed`. Swap art: add
+  `image:` per biome once its tileset is generated.

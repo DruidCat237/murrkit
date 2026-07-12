@@ -4,7 +4,9 @@ import { GameScene } from "@/scenes/GameScene";
 import { BootScene } from "@/scenes/BootScene";
 import { RpgDemoScene } from "@/scenes/RpgDemoScene";
 import { PlatformerScene } from "@/scenes/PlatformerScene";
+import { TilemapScene } from "@/scenes/TilemapScene";
 import { cartridgeScenes } from "@/cartridge";
+import { hasMap } from "@/builders/mapRegistry";
 
 const params = new URLSearchParams(window.location.search);
 // Pick the scene to boot from `?level=…`. With no `?level` the engine lands on
@@ -59,14 +61,17 @@ const config: Phaser.Types.Core.GameConfig = {
   },
   // First scene in the list auto-starts. An external cartridge (git-ignored game
   // under src/cartridges/) wins by `?level=<id>`; then RPG demo + platformer run
-  // solo; every other level boots the slingshot BootScene → GameScene pipeline.
+  // solo; a bundled Map Studio map (`maps/<id>.map.yaml`) boots TilemapScene;
+  // every other level boots the slingshot BootScene → GameScene pipeline.
   scene:
     cartridgeScenes(levelId) ??
     (isRpgDemo
       ? [RpgDemoScene]
       : isPlatformer
         ? [PlatformerScene]
-        : [BootScene, GameScene]),
+        : hasMap(levelId)
+          ? [TilemapScene]
+          : [BootScene, GameScene]),
 };
 
 window.levelId = levelId;

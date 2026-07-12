@@ -72,6 +72,8 @@ New backend endpoints (v2):
 
 **RPG scaffold** (for RPG-Maker-class projects): `phaser_game/src/rpg/` — data-driven schema (items/stats/skills/enemies/balance), systems (`stats`/`inventory`/`combat`), UI kit (`HpMpBars`/`InventoryGrid`/`EquipmentPanel`/`ActionMenu`/`DamageNumber`/`Tooltip`), and `RpgDemoScene` (`?level=rpg_demo`). Reference: `.omc/plans/rpg-engine-foundation.md`. Full v2 design: `.omc/plans/murrkit-v2-rearchitecture.md`.
 
+**Map Studio** (2026-07 flagship): *game with a MAP = write `phaser_game/maps/<id>.map.yaml`*, never hand-place tiles. `src/builders/mapSpec.ts` (schema + 16-tile role convention) + `buildMapFromYAML.ts` (pure `compileMap` → Tiled JSON; seeded PRNG; rect+Voronoi biome regions; auto edge/corner transitions — the EARLIER biome in `tilesets` draws the edge, later sits on top) + `TilemapScene` (`?level=<map id>`, WASD avatar on `spawn`, `walkable:false` collides, `__gameState` wired for `/drive`). Biomes with no `image:` render deterministic placeholder colours → a map is playtestable the second the YAML exists. Per-biome art: gen-queue rows `asset_type:"biome_tileset"`, `name=<biome>` (accept-gate) → `agents/asset_pipeline.generate_biome_tileset` (4×4 autotile prompt → optional edit-mode style anchor → slice → rembg decor row only) publishes to the STABLE path `/assets/tilesets/<project>/<biome>/sheet.png` (map.yaml can reference it before it exists; 404→placeholder). REST: `GET/PUT /api/maps/<id>`, `POST /api/maps/parse` (PUT validates like the compiler). Frontend: `Map Studio` center tab (`components/map/MapStudioPanel.tsx`) — YAML editor + live validation + region preview + per-biome generate buttons.
+
 ## Key paths
 
 ```
@@ -90,9 +92,10 @@ murrkit/
 │   │   ├── main.ts            ← Phaser game entry
 │   │   ├── scenes/            ← one TS file per level
 │   │   ├── prefabs/           ← reusable game-object classes (Cat, Slingshot, etc.)
-│   │   ├── builders/          ← YAML → Phaser scene compiler
+│   │   ├── builders/          ← YAML → Phaser scene compiler (+ map compiler)
 │   │   └── utils/
 │   ├── levels/                ← *.yaml level specs
+│   ├── maps/                  ← *.map.yaml Map Studio specs (?level=<id>)
 │   ├── public/                ← static assets (sprites, audio, fonts)
 │   ├── tests/                 ← Playwright vision-regression specs
 │   ├── vite.config.ts

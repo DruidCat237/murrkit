@@ -34,6 +34,7 @@ const DEFAULT_CENTER_TABS: CenterTab[] = [
   { id: "tab-code",      kind: "code",     title: "Code",            paneId: "p-left" },
   { id: "tab-spritesheet", kind: "spritesheet", title: "Spritesheet Import", paneId: "p-left" },
   { id: "tab-animator",  kind: "animator", title: "Animator",        paneId: "p-left" },
+  { id: "tab-map",       kind: "map",      title: "Map Studio",      paneId: "p-left" },
   { id: "tab-scene",     kind: "scene",    title: "Phaser Game",     paneId: "p-left" },
 ];
 
@@ -150,6 +151,14 @@ function readStorage(): LayoutSnapshot | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as LayoutSnapshot;
     if (parsed.version !== 7) return null;
+    // In-place migration: older v7 snapshots predate the Map Studio tab —
+    // inject it (before the Phaser Game tab) instead of nuking the layout.
+    if (!parsed.centerTabs.some((t) => t.kind === "map")) {
+      const mapTab = DEFAULT_CENTER_TABS.find((t) => t.kind === "map")!;
+      const sceneIdx = parsed.centerTabs.findIndex((t) => t.kind === "scene");
+      parsed.centerTabs = [...parsed.centerTabs];
+      parsed.centerTabs.splice(sceneIdx === -1 ? parsed.centerTabs.length : sceneIdx, 0, mapTab);
+    }
     return parsed;
   } catch { return null; }
 }
@@ -421,5 +430,6 @@ function defaultTabTitle(kind: CenterTabKind, file?: string): string {
     case "qwen":     return "AI Peer";
     case "vision":   return "Vision Reviews";
     case "references": return "References";
+    case "map":      return "Map Studio";
   }
 }

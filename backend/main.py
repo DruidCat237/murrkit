@@ -135,6 +135,7 @@ from backend.routers import (
     phaser as phaser_router,
     spritesheet_import as spritesheet_import_router,
     fs as fs_router,
+    maps as maps_router,
 )
 from backend.services import gen_queue as gen_queue_svc
 
@@ -162,6 +163,7 @@ app.include_router(references_router.router)
 app.include_router(phaser_router.router)
 app.include_router(spritesheet_import_router.router)
 app.include_router(fs_router.router)
+app.include_router(maps_router.router)
 
 
 # ---- Auth helper ------------------------------------------------------------

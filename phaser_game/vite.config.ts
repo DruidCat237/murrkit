@@ -26,6 +26,7 @@ export default defineConfig({
     alias: {
       "@": resolve(__dirname, "src"),
       "@levels": resolve(__dirname, "levels"),
+      "@maps": resolve(__dirname, "maps"),
     },
   },
   build: {

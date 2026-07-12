@@ -374,7 +374,47 @@ export type ActivitySection =
 export type CenterTabKind =
   | "chat" | "code" | "animator" | "scene"
   | "library" | "generate" | "wizard" | "queue" | "settings" | "qwen" | "vision" | "references"
-  | "spritesheet";
+  | "spritesheet" | "map";
+
+// ---- Map Studio (phaser_game/maps/*.map.yaml over /api/maps) -----------------
+
+export interface MapListEntry {
+  id: string;
+  path: string;
+  bytes: number;
+  mtime: number;
+}
+
+/** Per-biome tileset generation status for one map. */
+export interface MapTilesetStatus {
+  biome: string;
+  image: string | null;
+  image_exists: boolean;
+  /** Stable publish path a `biome_tileset` gen lands at for this project. */
+  suggested_image: string;
+  suggested_exists: boolean;
+  /** Disk path of the published sheet (null until generated) — used as
+   *  base_image_path so later biomes style-match the first via edit-mode. */
+  published_disk_path: string | null;
+  walkable: boolean;
+  color: string | null;
+}
+
+export interface MapDetail {
+  id: string;
+  yaml: string;
+  /** Parsed spec, or null when the file fails validation (see `errors`). */
+  spec: Record<string, unknown> | null;
+  errors: string[];
+  tilesets: MapTilesetStatus[];
+  play_url_hint: string;
+}
+
+export interface MapParseResult {
+  ok: boolean;
+  spec: Record<string, unknown> | null;
+  errors: string[];
+}
 
 // ---- v2: User Reference Materials (drag-drop folder) ------------------------
 
