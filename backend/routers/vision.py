@@ -660,12 +660,29 @@ async def review_frames(req: ReviewRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"unknown qwen session {req.qwen_session_id}")
 
     blocks: list[dict[str, Any]] = []
+    compare_mode = req.mode == "compare" and bool(ref_paths)
+    # In compare mode, lead with the REFERENCE image(s). The captain routes
+    # compare to Qwen on purpose (Gemini scores the stylistic gap poorly), so
+    # dropping the references — as this branch used to — defeated the whole
+    # point and returned a verdict-free chronological review instead.
+    if compare_mode:
+        blocks.append({"type": "text", "text": f"REFERENCE image(s) — the target to match ({len(ref_paths)}):"})
+        for p in ref_paths:
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+            blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+        blocks.append({"type": "text", "text": f"CURRENT frame(s) to evaluate against the reference ({len(paths)}):"})
     for p in paths:
         b64 = base64.b64encode(p.read_bytes()).decode("ascii")
         blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
-    user_text = f"{len(paths)} chronological frames. " + (
-        req.question or "Apply system protocol: delta first, ranked bugs, verdict."
-    )
+    if compare_mode:
+        user_text = (
+            f"Compare the {len(paths)} CURRENT frame(s) to the {len(ref_paths)} REFERENCE image(s) above. "
+            + (req.question or "Rank the stylistic/compositional gaps and give a clear pass/fail verdict.")
+        )
+    else:
+        user_text = f"{len(paths)} chronological frames. " + (
+            req.question or "Apply system protocol: delta first, ranked bugs, verdict."
+        )
     blocks.append({"type": "text", "text": user_text})
 
     logger.warning(
@@ -683,11 +700,13 @@ async def review_frames(req: ReviewRequest) -> dict[str, Any]:
     )
     response = {
         "provider": "qwen",
+        "mode": "compare" if compare_mode else "chronological",
         "transport": "kitty_proxy",
         "tier": "fallback",
         "model": "qwen-vl-max-latest",
         "analysis": qwen_result["text"],
         "frames_reviewed": len(paths),
+        "references_used": len(ref_paths) if compare_mode else 0,
         "tokens": {
             "input": qwen_result["input_tokens"],
             "output": qwen_result["output_tokens"],
@@ -699,9 +718,11 @@ async def review_frames(req: ReviewRequest) -> dict[str, Any]:
         "ts": time.time(),
         "project": req.project,
         "provider": "qwen",
+        "mode": response["mode"],
         "transport": "kitty_proxy",
         "model": "qwen-vl-max-latest",
         "frames": [str(p) for p in paths],
+        "references": [str(p) for p in ref_paths] if compare_mode else [],
         "frame_count": len(paths),
         "question": req.question,
         "analysis": qwen_result["text"],

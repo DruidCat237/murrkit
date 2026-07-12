@@ -412,11 +412,20 @@ async def accept_plan(req: AcceptRequest) -> dict[str, Any]:
 
     dispatched: list[str] = []
     for t in targets:
-        # Drop the planned row, then submit a real worker via existing enqueue.
-        await gq.discard_planned(t.id)
+        # Dispatch FIRST, then drop the planned row only once a real worker
+        # exists. The old order discarded the row before dispatch, so any row
+        # whose asset_type _dispatch_from_plan doesn't recognise (returns None)
+        # was silently deleted — the user clicked Accept and the task vanished.
         new_id = await _dispatch_from_plan(t)
         if new_id:
+            await gq.discard_planned(t.id)
             dispatched.append(new_id)
+        else:
+            logger.warning(
+                "accept_plan: no worker for asset_type={at!r} (task {tid}) — "
+                "keeping the planned row instead of dropping it",
+                at=t.asset_type, tid=t.id,
+            )
     return {"accepted": len(dispatched), "task_ids": dispatched}
 
 
@@ -498,14 +507,18 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
 
                 await handle.progress(35, f"waiting for Kitty job {job_id}")
                 # Poll for completion off-thread (sync poll loop).
-                # Signature: wait_for_completion(task_id, on_poll=None,
-                #                                poll_interval_s=8, max_wait_min=30)
+                # Signature: wait_for_completion(task_id, on_poll, poll_interval_s,
+                #                                max_wait_min, should_cancel)
+                # should_cancel lets the poll THREAD stop when the user cancels —
+                # asyncio-task cancellation can't kill the thread, so without it
+                # a cancelled edit would keep hitting Kitty for up to 25 min.
                 data = await _asyncio.to_thread(
                     _g.wait_for_completion,
                     job_id,
                     None,   # on_poll callback — not needed here
                     8,      # poll_interval_s
                     25,     # max_wait_min
+                    lambda: handle.cancelled,
                 )
                 result_url = _g.extract_result_url(data)
                 if not result_url:

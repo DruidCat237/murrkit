@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -112,10 +114,23 @@ class ProjectState:
         self._init_db()
         self._scan_filesystem()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3's own `with conn:` commits/rolls back but NEVER closes the
+        # connection — leaking a handle per call until GC finalizes it (a real
+        # problem on Windows, where the open handle can also block file ops).
+        # Wrap it so every `with self._conn() as c:` commits on success, rolls
+        # back on error, and always closes.
         c = sqlite3.connect(DB_PATH)
         c.row_factory = sqlite3.Row
-        return c
+        try:
+            yield c
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+        finally:
+            c.close()
 
     def _init_db(self) -> None:
         with self._conn() as c:

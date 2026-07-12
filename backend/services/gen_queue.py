@@ -46,6 +46,12 @@ _db_lock = threading.Lock()
 
 def _init_db() -> None:
     with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        # WAL + relaxed sync: durability stays best-effort (this is a UI cache,
+        # not source of truth), but each commit no longer fsyncs a rollback
+        # journal — cutting the per-tick cost _broadcast pays on every progress
+        # / heartbeat event. journal_mode is persistent per DB file.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS queue_tasks (
@@ -64,22 +70,42 @@ def _init_db() -> None:
 _init_db()
 
 
-def _persist(task: "QueueTask") -> None:
-    """Upsert a task row. Cheap — ~0.5 ms with WAL off; safe to call after
-    every state change. Errors are logged but never re-raised to avoid
-    poisoning the worker loop."""
+def _write_row(task_id: str, project: str, payload: str) -> None:
+    """Blocking DB upsert of an already-serialized payload. Safe to run in a
+    worker thread (asyncio.to_thread) — it touches no mutable task object, only
+    the strings it was handed."""
     try:
-        payload = json.dumps(asdict(task), ensure_ascii=False)
         with _db_lock, sqlite3.connect(_DB_PATH) as conn:
             conn.execute(
                 "INSERT INTO queue_tasks (id, project, payload, updated_at) "
                 "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, "
                 "updated_at=excluded.updated_at",
-                (task.id, task.project, payload, time.time()),
+                (task_id, project, payload, time.time()),
             )
     except (sqlite3.Error, OSError) as e:
-        logger.warning("queue _persist failed for task {tid}: {e}", tid=task.id, e=e)
+        logger.warning("queue _write_row failed for task {tid}: {e}", tid=task_id, e=e)
+
+
+def _serialize_task(task: "QueueTask") -> str | None:
+    """asdict + json.dumps. MUST be called on the event-loop thread (or wherever
+    the task is otherwise quiescent): asdict iterates task.extra, and running it
+    off-thread while a coroutine does task.extra.update() raises 'dictionary
+    changed size during iteration'."""
+    try:
+        return json.dumps(asdict(task), ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        logger.warning("queue _serialize_task failed for {tid}: {e}", tid=task.id, e=e)
+        return None
+
+
+def _persist(task: "QueueTask") -> None:
+    """Serialize + upsert a task row synchronously. For SYNC callers (on the
+    loop thread) — do NOT call from a worker thread; use _serialize_task on the
+    loop then _write_row off-thread (see _broadcast)."""
+    payload = _serialize_task(task)
+    if payload is not None:
+        _write_row(task.id, task.project, payload)
 
 
 def _persist_delete(task_id: str) -> None:
@@ -194,23 +220,49 @@ def _semaphore() -> asyncio.Semaphore:
     return _state.semaphore
 
 
+_ACTIVE_STATES = ("queued", "started", "progress")
+
+
 def _trim_table() -> None:
+    # Evict oldest TERMINAL rows only. Popping by pure insertion order could
+    # garbage-collect a still-running task — a burst of enqueues pushes an
+    # in-flight row to the front — stranding it uncancellable and leaking its
+    # worker. Never evict a queued/started/progress task; if everything is
+    # in-flight, let the table grow briefly rather than drop live work.
     while len(_state.order) > TABLE_BOUND:
-        oldest = _state.order.pop(0)
-        _state.tasks.pop(oldest, None)
-        _state.cancel_flags.pop(oldest, None)
-        _state.asyncio_tasks.pop(oldest, None)
-        _persist_delete(oldest)
+        victim = next(
+            (
+                tid
+                for tid in _state.order
+                if (t := _state.tasks.get(tid)) is None
+                or t.status not in _ACTIVE_STATES
+            ),
+            None,
+        )
+        if victim is None:
+            break
+        _state.order.remove(victim)
+        _state.tasks.pop(victim, None)
+        _state.cancel_flags.pop(victim, None)
+        _state.asyncio_tasks.pop(victim, None)
+        _persist_delete(victim)
 
 
 async def _broadcast(event: str, task: QueueTask) -> None:
-    # Always persist first — broadcasts are best-effort, durability is not.
+    # Serialize the task HERE on the event-loop thread (asdict is atomic w.r.t.
+    # other coroutines — none can interleave mid-iteration), then push only the
+    # blocking sqlite write off the loop. Doing asdict inside the worker thread
+    # would race a concurrent task.extra.update() ("dictionary changed size
+    # during iteration"); doing the fsync inline would stall the loop on every
+    # progress/heartbeat tick. This split gets both right.
     if event == "cancelled" and task.status == "planned":
         # Planned-row discard deletes the row entirely (matches in-memory
         # behaviour in discard_planned).
-        _persist_delete(task.id)
+        await asyncio.to_thread(_persist_delete, task.id)
     else:
-        _persist(task)
+        payload = _serialize_task(task)
+        if payload is not None:
+            await asyncio.to_thread(_write_row, task.id, task.project, payload)
     if not _state.connections:
         return
     msg = json.dumps({"event": event, "task": asdict(task), "ts": time.time()})
@@ -381,8 +433,16 @@ async def _run_task(task: QueueTask, worker: Callable[[QueueTask, QueueTaskHandl
             await _broadcast("cancelled", task)
             raise
         except Exception as e:  # noqa: BLE001
-            logger.exception("gen-queue task {id} crashed: {e}", id=task.id, e=e)
-            await handle.fail(f"{type(e).__name__}: {e}")
+            if handle.cancelled:
+                # The worker raised because the user cancelled (e.g. the poll's
+                # cooperative PollCancelled) — it's already marked cancelled by
+                # cancel_task(); don't overwrite that with a spurious "failed".
+                task.status = "cancelled"
+                task.completed_at = time.time()
+                await _broadcast("cancelled", task)
+            else:
+                logger.exception("gen-queue task {id} crashed: {e}", id=task.id, e=e)
+                await handle.fail(f"{type(e).__name__}: {e}")
         finally:
             # Always tear down a still-running heartbeat so it doesn't keep
             # broadcasting progress for a completed/failed/cancelled task.
@@ -479,7 +539,7 @@ async def update_planned(
     if t is None or t.status != "planned":
         return None
     if prompt is not None:
-        t.prompt = prompt[:400]
+        t.prompt = prompt  # full prompt — this is the real generation input
     if quality is not None:
         t.planned_quality = quality
     if resolution is not None:

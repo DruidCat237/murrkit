@@ -292,28 +292,51 @@ def submit_edit_from_path(
 _SYNC_COMPLETIONS: dict[int, dict[str, Any]] = {}
 
 
+class PollCancelled(RuntimeError):
+    """Raised by wait_for_completion when should_cancel() turns True — lets the
+    gen-queue worker stop the poll THREAD (asyncio task cancellation alone can't
+    kill a thread, so an un-hooked poll would keep hitting Kitty for ~25 min)."""
+
+
 def wait_for_completion(
     task_id: str,
     on_poll: Callable[[str, int], None] | None = None,
     poll_interval_s: int = 8,        # Studio default
     max_wait_min: int = 30,          # Studio default for gpt-image-2
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Poll status until completed/failed. Returns the final payload dict."""
+    """Poll status until completed/failed. Returns the final payload dict.
+
+    Pass `should_cancel` (a cheap thread-safe bool read, e.g. the queue's
+    cancel-flag) to make the loop abort promptly when the user cancels instead
+    of leaking a 25-minute poll thread.
+    """
     if task_id.startswith("sync:"):
         cached = _SYNC_COMPLETIONS.pop(int(task_id.split(":", 1)[1]), None)
         if cached is None:
             raise RuntimeError(f"sync completion {task_id} expired from cache")
         return cached
 
+    def _sleep_or_cancel(seconds: float) -> None:
+        # Sleep in small slices so a cancel lands within ~0.5s, not a full poll.
+        slept = 0.0
+        while slept < seconds:
+            if should_cancel is not None and should_cancel():
+                raise PollCancelled(f"Kitty poll for job {task_id} cancelled")
+            time.sleep(min(0.5, seconds - slept))
+            slept += 0.5
+
     started = time.time()
     poll = 0
     last_status: str | None = None
     while True:
+        if should_cancel is not None and should_cancel():
+            raise PollCancelled(f"Kitty poll for job {task_id} cancelled")
         if time.time() - started > max_wait_min * 60:
             raise TimeoutError(
                 f"Kitty job {task_id} did not finish in {max_wait_min} min",
             )
-        time.sleep(poll_interval_s)
+        _sleep_or_cancel(poll_interval_s)
         poll += 1
         data = kitty_api.get_job_status_sync(task_id, kitty_api.WORKFLOW_GPT_IMAGE_2)
         status = (data.get("status") or "").lower()
