@@ -72,9 +72,16 @@ export default function FileTree({ onPick, activePath, root = "phaser_game" }: F
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {error ? (
-          <div className="p-3 text-xs text-err">
+          <div className="p-3 text-xs text-err select-text">
             Failed to load file tree: {error}
-            <button onClick={refresh} className="block mt-2 btn btn-ghost text-xs">Retry</button>
+            <button
+              onClick={refresh}
+              disabled={refreshing}
+              className="mt-2 btn btn-ghost text-xs flex items-center gap-1 disabled:opacity-50"
+            >
+              {refreshing && <RefreshCcw className="h-3 w-3 animate-spin" />}
+              {refreshing ? "Retrying…" : "Retry"}
+            </button>
           </div>
         ) : !tree ? (
           <div className="p-3 space-y-2">

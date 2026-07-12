@@ -30,6 +30,7 @@ export default function CommandPalette() {
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState(0);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsError, setSkillsError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -37,7 +38,8 @@ export default function CommandPalette() {
     setQ("");
     setSelected(0);
     setTimeout(() => inputRef.current?.focus(), 30);
-    listSkills().then(setSkills).catch(() => { /* ignore */ });
+    setSkillsError(false);
+    listSkills().then(setSkills).catch(() => setSkillsError(true));
   }, [open]);
 
   const items = useMemo<PaletteItem[]>(() => {
@@ -141,6 +143,11 @@ export default function CommandPalette() {
         {filtered.length === 0 && (
           <div className="p-6 text-center text-text-subtle text-sm">
             No matches. Try a different query.
+          </div>
+        )}
+        {skillsError && (
+          <div className="px-3 py-1.5 text-[11px] text-accent-warn bg-bg-subtle border-b border-line">
+            Skills unavailable — backend not reachable, so /skill commands are hidden.
           </div>
         )}
         {groupOrder.map((g) =>

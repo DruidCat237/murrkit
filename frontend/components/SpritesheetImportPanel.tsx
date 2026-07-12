@@ -50,6 +50,9 @@ export default function SpritesheetImportPanel() {
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<SpritesheetImportResponse | null>(null);
+  // Persistent failure banner — a toast alone vanishes while the stale
+  // preview keeps looking like a success.
+  const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Revoke the object URL when the file changes / on unmount to avoid leaks.
@@ -71,6 +74,7 @@ export default function SpritesheetImportPanel() {
     }
     setResult(null);
     setImgSize(null);
+    setImportError(null);
     setFile(f);
   }, [toast]);
 
@@ -92,12 +96,15 @@ export default function SpritesheetImportPanel() {
     }
     setImporting(true);
     setResult(null);
+    setImportError(null);
     try {
       const res = await importSpritesheet({ file, rows, cols, project });
       setResult(res);
       toast.success(`Sliced ${res.frames.length} frames (${res.cols}×${res.rows})`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Import failed");
+      const msg = e instanceof Error ? e.message : "Import failed";
+      setImportError(msg);
+      toast.error(msg);
     } finally {
       setImporting(false);
     }
@@ -230,6 +237,14 @@ export default function SpritesheetImportPanel() {
             </button>
           </div>
         </div>
+
+        {/* ---- import failure (persistent, selectable) ------------------ */}
+        {importError && (
+          <div className="mx-4 mb-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 select-text">
+            Import failed: {importError} — the preview above is the UNSLICED
+            upload; fix the grid or pick another file and slice again.
+          </div>
+        )}
 
         {/* ---- sliced result strip ------------------------------------- */}
         {result && <SlicedStrip result={result} />}

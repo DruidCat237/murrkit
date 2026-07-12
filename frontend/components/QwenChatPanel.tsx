@@ -41,6 +41,7 @@ import {
   Zap,
 } from "lucide-react";
 import { BACKEND } from "@/lib/api";
+import { useToasts } from "./Toaster";
 
 // LocalStorage key — single global session id (Qwen budget isn't
 // project-scoped on the backend, one session serves any project).
@@ -113,6 +114,7 @@ export default function QwenChatPanel({
 }: {
   projectName?: string;
 }) {
+  const toast = useToasts();
   const [pricing, setPricing] = useState<Pricing | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [tokensLimit, setTokensLimit] = useState(500_000);
@@ -388,15 +390,23 @@ export default function QwenChatPanel({
         await refreshBudget();
       } else {
         const err = await r.json().catch(() => ({}));
+        const detail = err.detail ?? `HTTP ${r.status}`;
+        // Toast makes the failure impossible to miss; the transcript marker
+        // keeps a persistent record. Draft is kept so the user can retry.
+        toast.error(`Peer send failed: ${detail}`);
         setTranscript((t) => [
           ...t,
           {
             role: "system",
-            content: `⚠ ${err.detail ?? `HTTP ${r.status}`}`,
+            content: `⚠ ${detail}`,
             ts: new Date().toISOString(),
           },
         ]);
       }
+    } catch (e) {
+      // Network-level failure (backend down mid-session) — without this the
+      // rejection was swallowed and the user got zero feedback.
+      toast.error(e instanceof Error ? e.message : "Peer send failed (network)");
     } finally {
       setSending(false);
     }

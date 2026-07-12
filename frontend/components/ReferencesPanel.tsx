@@ -53,6 +53,9 @@ export default function ReferencesPanel({
   const [list, setList] = useState<ReferenceList | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState<string[]>([]);
+  // Batch progress ("3 of 10") — per-file spinners alone give no sense of
+  // how much of a large drag-drop remains.
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ReferenceFile | null>(null);
@@ -121,11 +124,14 @@ export default function ReferencesPanel({
   const uploadMany = useCallback(
     async (files: File[]) => {
       setError(null);
+      setBatch({ done: 0, total: files.length });
       // Sequential, not parallel — backend writes one-by-one anyway
       // and serial uploads make the progress UI legible.
       for (const f of files) {
         await uploadOne(f);
+        setBatch((b) => (b ? { ...b, done: b.done + 1 } : b));
       }
+      setBatch(null);
       await refresh();
     },
     [refresh, uploadOne],
@@ -288,6 +294,11 @@ export default function ReferencesPanel({
       {/* ---- ACTIVE UPLOADS -------------------------------------------- */}
       {uploading.length > 0 && (
         <div className="mx-3 mt-2 space-y-1">
+          {batch && batch.total > 1 && (
+            <div className="text-[10px] text-text-dim">
+              Uploading {Math.min(batch.done + 1, batch.total)} of {batch.total}…
+            </div>
+          )}
           {uploading.map((name) => (
             <div
               key={name}

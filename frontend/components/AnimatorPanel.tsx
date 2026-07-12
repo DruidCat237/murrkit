@@ -76,6 +76,7 @@ export default function AnimatorPanel() {
   const [sequence, setSequence] = useState<number[]>([]); // palette indices, ordered
   const [playing, setPlaying] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Build the palette from the grid + image size.
   const palette: PaletteFrame[] = useMemo(() => {
@@ -145,11 +146,16 @@ export default function AnimatorPanel() {
       frames,
     };
     setSaving(true);
+    setSaveError(null);
     try {
       await saveAnimationSpec(project, name, spec);
       toast.success(`Saved "${name}" — ${frames.length}f @ ${fps} FPS`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
+      const msg = e instanceof Error ? e.message : "Save failed";
+      // Inline + selectable next to the Save button; the toast alone
+      // disappears before the user can read a long backend detail.
+      setSaveError(msg);
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -327,6 +333,11 @@ export default function AnimatorPanel() {
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               Save animation @ {fps} FPS
             </button>
+            {saveError && (
+              <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-300 select-text">
+                Save failed: {saveError}
+              </div>
+            )}
           </div>
         </aside>
       </div>
