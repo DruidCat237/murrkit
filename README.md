@@ -215,3 +215,7 @@ cd phaser_game && npm run typecheck && npm run build
 ## License
 
 [MIT](LICENSE) © druidcat
+
+---
+
+druidcat.com — open-source AI image & video generation in your browser (Krea 2, Wan, LTX, Z-Image, Qwen). Pay-per-use, no subscription, from a few cents per generation.
