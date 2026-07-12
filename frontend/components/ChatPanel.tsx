@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 import {
   abortChatTask,
+  backendReady,
   clearChatHistory,
   getConfig,
   getCostSnapshot,
@@ -304,13 +305,28 @@ export default function ChatPanel({
       // ("zaciął się i wyłączył"). 4 min tolerates deep work; a genuinely dead
       // WS still gets cleaned up, and the user can always hit STOP.
       if (idleMs > 240_000) {
-        console.warn(
-          `[watchdog] Chat WS idle for ${Math.floor(idleMs / 1000)}s — force-finalizing turn`,
-        );
+        const secs = Math.floor(idleMs / 1000);
+        console.warn(`[watchdog] Chat WS idle for ${secs}s — force-finalizing turn`);
         if (wsRef.current) {
           try { wsRef.current.close(); } catch { /* ignore */ }
           wsRef.current = null;
         }
+        // Make the abandonment VISIBLE — otherwise the last agent bubble just
+        // freezes mid-sentence and the user can't tell the turn died vs is
+        // still thinking. Append a marker to the last agent message.
+        setMsgs((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last && last.role === "agent") {
+            copy[copy.length - 1] = {
+              ...last,
+              text:
+                (last.text || "").replace(/\s+$/, "") +
+                `\n\n_[Connection lost after ${secs}s of silence — the turn may be incomplete. Resend to continue.]_`,
+            };
+          }
+          return copy;
+        });
         setBusy(false);
         setActiveTaskId(null);
       }
@@ -425,6 +441,12 @@ export default function ChatPanel({
     // message. Cleared once `busy` takes over (or on an early return).
     if ((!txt && files.length === 0) || busy || sendingRef.current) return;
     sendingRef.current = true;
+
+    // Wait for the port probe BEFORE we set busy/activeTaskId — openChatStream
+    // reads the mutable BACKEND synchronously, and awaiting it later (between
+    // setBusy and openChatStream) opened a window where a Stop during the probe
+    // aborted a not-yet-created task, then the stream opened anyway, unabortable.
+    await backendReady;
 
     // 1. Upload all attachments first
     let uploaded: ChatAttachment[] = [];

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import GenQueuePanel from "../queue/GenQueuePanel";
 import type { BottomTab } from "@/lib/types";
 import { BACKEND } from "@/lib/api";
@@ -33,6 +33,11 @@ function LogsTab() {
 function DockedLogTail() {
   const [lines, setLines] = useState<Array<{ level?: string; msg?: string; component?: string; ts?: string; raw?: string }>>([]);
   const [paused, setPaused] = useState(false);
+  // Read `paused` through a ref so toggling it doesn't tear down and reopen the
+  // socket (the old [paused] dep reconnected on every pause, dropping buffered
+  // lines); the mount-once effect below reads the live value here.
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     // initial fetch
@@ -41,17 +46,39 @@ function DockedLogTail() {
       .then((d) => setLines(d.lines ?? []))
       .catch(() => { /* ignore */ });
 
-    // WS tail
-    const ws = new WebSocket(BACKEND.replace(/^http/, "ws") + "/api/logs/tail");
-    ws.onmessage = (e) => {
-      if (paused) return;
-      try {
-        const parsed = JSON.parse(e.data);
-        setLines((prev) => [...prev.slice(-499), parsed]);
-      } catch { /* ignore */ }
+    // WS tail WITH reconnect — the old handler had no onclose, so the docked
+    // tail went permanently silent after a backend restart.
+    let cancelled = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let ws: WebSocket | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      ws = new WebSocket(BACKEND.replace(/^http/, "ws") + "/api/logs/tail");
+      ws.onopen = () => { attempt = 0; };
+      ws.onmessage = (e) => {
+        if (pausedRef.current) return;
+        try {
+          const parsed = JSON.parse(e.data);
+          setLines((prev) => [...prev.slice(-499), parsed]);
+        } catch { /* ignore */ }
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        attempt += 1;
+        timer = setTimeout(connect, Math.min(16_000, 1000 * 2 ** Math.min(attempt, 4)));
+      };
+      ws.onerror = () => { /* close fires next */ };
+    }
+
+    connect();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      try { ws?.close(); } catch { /* ignore */ }
     };
-    return () => { try { ws.close(); } catch { /* ignore */ } };
-  }, [paused]);
+  }, []);
 
   const LEVEL_COLORS: Record<string, string> = {
     TRACE: "text-text-subtle",

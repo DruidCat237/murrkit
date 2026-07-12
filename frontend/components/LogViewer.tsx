@@ -50,32 +50,47 @@ export default function LogViewer() {
         // ignore
       }
     })();
-    // Open WS for live tail
-    const wsUrl = BACKEND.replace(/^http/, "ws") + "/api/logs/tail";
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.onmessage = (e) => {
-      if (pausedRef.current) return;
-      try {
-        const parsed = JSON.parse(e.data) as LogLine;
-        setLines((prev) => {
-          const next = [...prev, parsed];
-          if (next.length > 1000) next.shift();
-          return next;
-        });
-      } catch {
-        // ignore
-      }
-    };
-    ws.onclose = () => {
-      wsRef.current = null;
-    };
+
+    // Open WS for live tail, WITH reconnect: the old handler just nulled the
+    // ref on close, so a backend restart froze the tail (stale lines, no new
+    // ones) until the drawer was reopened. Reconnect with a small backoff.
+    let cancelled = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      const ws = new WebSocket(BACKEND.replace(/^http/, "ws") + "/api/logs/tail");
+      wsRef.current = ws;
+      ws.onopen = () => { attempt = 0; };
+      ws.onmessage = (e) => {
+        if (pausedRef.current) return;
+        try {
+          const parsed = JSON.parse(e.data) as LogLine;
+          setLines((prev) => {
+            const next = [...prev, parsed];
+            if (next.length > 1000) next.shift();
+            return next;
+          });
+        } catch {
+          // ignore
+        }
+      };
+      ws.onclose = () => {
+        wsRef.current = null;
+        if (cancelled) return;
+        attempt += 1;
+        timer = setTimeout(connect, Math.min(16_000, 1000 * 2 ** Math.min(attempt, 4)));
+      };
+      ws.onerror = () => { /* close fires next */ };
+    }
+
+    connect();
     return () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      try { wsRef.current?.close(); } catch { /* ignore */ }
+      wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

@@ -138,6 +138,13 @@ export default function StudioHome() {
         return;
       }
       toast("success", `Deleted "${projectName}"`);
+      // If we just deleted the project the session is pointed at, reset to
+      // 'default' (and update the backend pointer) — otherwise the whole app
+      // stays aimed at a project that no longer exists on disk.
+      if (activeProject === projectName) {
+        setActiveProject("default");
+        await apiSetActiveProject("default").catch(() => { /* pointer is best-effort */ });
+      }
       await load();
     } catch (e) {
       toast("error", `Network: ${(e as Error).message}`);

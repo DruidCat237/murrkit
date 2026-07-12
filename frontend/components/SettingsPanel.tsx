@@ -80,11 +80,22 @@ export default function SettingsPanel() {
   const [testing, setTesting] = useState<TestKey | null>(null);
   const [testResults, setTestResults] = useState<Partial<Record<TestKey, TestResult>>>({});
   const [reloadNote, setReloadNote] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
 
   async function refresh() {
     const s = await getConfig();
     setSnapshot(s);
     setEdits({});
+  }
+
+  // "Reload from .env" wipes every unsaved field — confirm first when edits
+  // exist (the label reads ambiguously, and it's a silent data-loss otherwise).
+  function reloadFromEnv() {
+    const n = Object.keys(edits).length;
+    if (n > 0 && !confirm(`Discard ${n} unsaved change${n === 1 ? "" : "s"} and reload from .env on disk?`)) {
+      return;
+    }
+    void refresh();
   }
 
   useEffect(() => {
@@ -103,7 +114,7 @@ export default function SettingsPanel() {
       await refresh();
       return true;
     } catch (e) {
-      alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      setReloadNote(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     } finally {
       setSaving(false);
@@ -149,8 +160,20 @@ export default function SettingsPanel() {
   }, [edits]);
 
   async function doReload() {
-    const r = await reloadBackend();
-    setReloadNote(r.note);
+    setReloading(true);
+    setReloadNote(null);
+    try {
+      const r = await reloadBackend();
+      setReloadNote(r.note);
+    } catch (e) {
+      // The backend is often down/restarting exactly when this is clicked —
+      // surface it instead of swallowing the rejection with no feedback.
+      setReloadNote(
+        `Backend reload failed: ${e instanceof Error ? e.message : String(e)} — is it running on :8001?`,
+      );
+    } finally {
+      setReloading(false);
+    }
   }
 
   if (!snapshot) {
@@ -180,18 +203,20 @@ export default function SettingsPanel() {
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button
-            onClick={refresh}
+            onClick={reloadFromEnv}
             className="btn border border-line text-xs flex items-center gap-1"
-            title="Reload values from .env on disk"
+            title="Reload values from .env on disk (prompts if you have unsaved edits)"
           >
             <RefreshCw className="h-3 w-3" />
             Reload from .env
           </button>
           <button
             onClick={doReload}
-            className="btn border border-line text-xs flex items-center gap-1"
+            disabled={reloading}
+            className="btn border border-line text-xs flex items-center gap-1 disabled:opacity-50"
             title="Best-effort hint for restarting backend"
           >
+            {reloading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
             Reload backend
           </button>
         </div>
