@@ -250,7 +250,11 @@ async def enqueue(
     task = QueueTask(
         id=task_id,
         asset_type=asset_type,
-        prompt=prompt[:400],  # bound preview
+        # Keep the FULL prompt — it is the real upstream generation input the
+        # workers pass to Kitty. Truncating here (the old `[:400]`) silently cut
+        # rich multi-frame prompts mid-sentence and billed the user for an image
+        # made from the fragment. The UI can wrap/scroll the full text.
+        prompt=prompt,
         project=project,
         eta_seconds=eta_seconds,
         extra=dict(extra or {}),
@@ -408,7 +412,9 @@ async def add_planned(
     task = QueueTask(
         id=task_id,
         asset_type=asset_type,
-        prompt=prompt[:400],
+        # Full prompt — accepting this planned row dispatches it verbatim to the
+        # generator. The old `[:400]` truncation lost the tail of rich prompts.
+        prompt=prompt,
         project=project,
         status="planned",
         cost_usd=cost_cents / 100.0,

@@ -30,6 +30,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,31 +111,16 @@ _dev_server_proc: subprocess.Popen[bytes] | None = None
 _dev_server_port: int = PHASER_DEFAULT_PORT
 _dev_server_started_at: float = 0.0
 
-# Single-flight guard: only ONE playtest at a time. Without this, two
-# concurrent /api/phaser/playtest calls each launch their own Chromium and
-# eat ~500MB+ RAM each. This is a backend-wide lock (lazy-init because
-# asyncio.Lock needs a running loop).
-_playtest_lock: asyncio.Lock | None = None
-
-def _get_playtest_lock() -> asyncio.Lock:
-    """Returns the singleton playtest lock, recreating it if it's bound to a
-    dead event loop (e.g. after uvicorn --reload regenerated the loop). The
-    stale Lock raises `RuntimeError: bound to a different event loop` on
-    acquire, which traps the entire endpoint. Detect by trying to use it and
-    recreating on mismatch."""
-    global _playtest_lock
-    if _playtest_lock is None:
-        _playtest_lock = asyncio.Lock()
-        return _playtest_lock
-    # Probe: is the lock's loop the currently running loop?
-    try:
-        current_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return _playtest_lock  # No loop yet; first acquire will bind it
-    lock_loop = getattr(_playtest_lock, "_loop", None)
-    if lock_loop is not None and lock_loop is not current_loop:
-        _playtest_lock = asyncio.Lock()
-    return _playtest_lock
+# Single-flight guard: only ONE playtest/drive at a time. Each spawns its own
+# Chromium (~500MB+ RAM), so concurrent runs double memory and fight for CPU —
+# which breaks the frame-cadence asserts both endpoints depend on for their
+# verdicts. This MUST be a threading primitive, NOT asyncio.Lock: /playtest and
+# /drive each run on a fresh per-request ProactorEventLoop (see
+# _proactor_endpoint), so a loop-bound asyncio.Lock can never serialize across
+# them — every concurrent call would see a different loop and slip through. A
+# module-level threading.Lock is process-wide and loop-independent; acquire it
+# off the loop via asyncio.to_thread so the private proactor loop stays free.
+_playtest_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -1114,14 +1100,13 @@ async def phaser_playtest(req: PlaytestRequest) -> dict[str, Any]:
     # Single-flight: refuse to run concurrent playtest (each spawns Chromium
     # = 500MB+ RAM). If a second call comes in while first is mid-flight,
     # wait or reject. Here we WAIT (lock acquires when prior finishes).
-    lock = _get_playtest_lock()
-    if lock.locked():
+    if _playtest_lock.locked():
         logger.info("playtest already running — queueing this call")
-    await lock.acquire()
+    await asyncio.to_thread(_playtest_lock.acquire)
     try:
         return await _phaser_playtest_impl(req)
     finally:
-        lock.release()
+        _playtest_lock.release()
 
 
 async def _phaser_playtest_impl(req: PlaytestRequest) -> dict[str, Any]:
@@ -1588,14 +1573,13 @@ async def phaser_drive(req: DriveRequest) -> dict[str, Any]:
             },
         ) from None
 
-    lock = _get_playtest_lock()
-    if lock.locked():
+    if _playtest_lock.locked():
         logger.info("drive: playtest/drive already running — queueing this call")
-    await lock.acquire()
+    await asyncio.to_thread(_playtest_lock.acquire)
     try:
         return await _phaser_drive_impl(req)
     finally:
-        lock.release()
+        _playtest_lock.release()
 
 
 async def _phaser_drive_impl(req: DriveRequest) -> dict[str, Any]:

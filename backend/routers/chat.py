@@ -36,7 +36,9 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.parse
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -57,6 +59,34 @@ from pydantic import BaseModel
 from core.config import PROJECT_ROOT, budget, settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Backstop: kill a captain turn that produces no output at all for this long.
+# Real turns stream tool_use / thought / token events continuously; total
+# silence past this window means the CLI is wedged (dead MCP handshake, stuck
+# network) and would otherwise hang the dashboard AND the autoplay loop forever.
+# Comfortably longer than the frontend's 240s watchdog so the visible case is
+# handled client-side first; this is the server-side safety net.
+_CLI_IDLE_TIMEOUT_S = 300.0
+
+
+def _ws_origin_ok(ws: WebSocket) -> bool:
+    """Guard the captain WebSockets against cross-site hijacking (CSWSH).
+
+    CORS middleware does NOT cover WebSocket handshakes, and these sockets can
+    drive the captain CLI — which executes code. A browser always sends an
+    `Origin` header on the WS handshake; if present it must be a local origin
+    (our dashboard, on any port), otherwise a random website the user has open
+    could open `ws://127.0.0.1:8001/api/chat/stream` and puppet the captain.
+    Non-browser clients (our own test scripts / curl) send no Origin and pass.
+    """
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        host = urllib.parse.urlparse(origin).hostname
+    except ValueError:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1")
 
 
 # ---- Storage paths ----------------------------------------------------------
@@ -434,6 +464,9 @@ async def chat_stream(ws: WebSocket) -> None:
         {kind:"error", error}                       — fatal
         {kind:"aborted", reason}                    — user-aborted
     """
+    if not _ws_origin_ok(ws):
+        await ws.close(code=1008)  # policy violation — cross-site handshake
+        return
     await ws.accept()
     task_id: str | None = None
     project_name = "default"
@@ -591,6 +624,9 @@ async def chat_autoplay(ws: WebSocket) -> None:
     from backend.routers import phaser
     from backend.services import autoplay_loop as al
 
+    if not _ws_origin_ok(ws):
+        await ws.close(code=1008)  # policy violation — cross-site handshake
+        return
     await ws.accept()
     task_id: str | None = None
     task: _Task | None = None
@@ -752,8 +788,17 @@ async def chat_autoplay(ws: WebSocket) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
-        if task_id and task_id in _tasks:
-            _tasks.pop(task_id, None)
+        # Mirror chat_stream's cleanup: if the dashboard disconnects mid-turn,
+        # signal abort AND terminate the inner CLI so an orphaned captain does
+        # not keep running (and burning tokens) after the socket is gone.
+        t = _tasks.pop(task_id, None) if task_id else None
+        if t is not None:
+            t.abort_event.set()
+            if t.proc is not None and t.proc.poll() is None:
+                try:
+                    t.proc.terminate()
+                except (ProcessLookupError, OSError):  # noqa: BLE001
+                    pass
         try:
             await ws.close()
         except Exception:  # noqa: BLE001
@@ -1825,27 +1870,50 @@ async def _stream_claude_cli(
             "cost_usd": 0.0,
         }
         return
-    # Hand the prompt to Claude via stdin then close it so the CLI knows
-    # input is complete and starts processing. Encoded as UTF-8 to handle
-    # Polish (and any other non-ASCII) cleanly.
-    try:
-        assert proc.stdin is not None
-        proc.stdin.write(prompt.encode("utf-8"))
-        proc.stdin.close()
-    except (OSError, BrokenPipeError) as e:
-        yield {
-            "kind": "final",
-            "text": f"[Failed to send prompt to Claude CLI stdin: {e!s}]",
-            "cost_usd": 0.0,
-        }
-        return
+    # Register the proc for abort BEFORE the (potentially blocking) stdin feed,
+    # so a mid-feed client disconnect can still terminate the child.
     if task is not None:
         task.proc = proc
+
+    # Feed the prompt to Claude via stdin OFF the event loop, then close it so
+    # the CLI knows input is complete. The prompt is routinely tens of KB and
+    # has hit 213KB — far past the OS pipe buffer — so a synchronous write on
+    # the loop thread would block until the child drains stdin and could freeze
+    # the whole backend. asyncio.to_thread keeps the loop responsive. Encoded
+    # as UTF-8 to handle Polish (and any other non-ASCII) cleanly.
+    def _feed_stdin() -> None:
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt.encode("utf-8"))
+            proc.stdin.close()
+        except (OSError, BrokenPipeError):
+            # Child died early / closed its input — the exit-code path reports it.
+            pass
+
+    await asyncio.to_thread(_feed_stdin)
 
     # Bridge: thread pulls lines from Popen.stdout and pushes onto an
     # asyncio.Queue; the generator consumes the queue.
     line_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=2048)
     loop = asyncio.get_running_loop()
+
+    # Drain stderr continuously into a bounded buffer. The CLI runs with
+    # --verbose and attaches MCP servers, so it can emit far more than the
+    # ~64KB Windows pipe buffer holds; if NOTHING reads stderr the child's
+    # write blocks, stdout stalls, and the entire turn deadlocks forever. Keep
+    # only the tail (for the exit-code error message) so memory stays bounded.
+    stderr_tail: deque[str] = deque(maxlen=200)
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        for raw in iter(proc.stderr.readline, b""):
+            stderr_tail.append(raw.decode("utf-8", errors="replace").rstrip())
+
+    stderr_thread = threading.Thread(
+        target=_drain_stderr, name="claude-cli-stderr", daemon=True
+    )
+    stderr_thread.start()
 
     def _reader() -> None:
         try:
@@ -1861,6 +1929,12 @@ async def _stream_claude_cli(
 
     tool_input_by_id: dict[str, dict[str, Any]] = {}
     full_text = ""
+    # HARDEN-8 tightening: only the stale-resume signature (a resumed session
+    # that emits NOTHING before a non-zero exit) should trigger a fresh retry.
+    # Track whether we saw any event / hit the idle backstop so a turn that ran
+    # real work but ended empty, or one we killed on timeout, is never replayed.
+    saw_any_event = False
+    cli_timed_out = False
     # Stream guards: cost warning + tool-call dedup (lessons from session #1)
     stream_guard = _StreamGuard(project_name=project_name or "default")
     final_cost = 0.0
@@ -1885,7 +1959,35 @@ async def _stream_claude_cli(
 
     try:
         while True:
-            line_b = await line_queue.get()
+            try:
+                line_b = await asyncio.wait_for(
+                    line_queue.get(), timeout=_CLI_IDLE_TIMEOUT_S
+                )
+            except asyncio.TimeoutError:
+                # No output at all for the whole window — the CLI is wedged.
+                # Terminate it and surface a partial result instead of hanging
+                # the dashboard (and the autoplay loop) forever.
+                cli_timed_out = True
+                logger.warning(
+                    "Claude CLI stream idle >{s}s — terminating wedged turn "
+                    "(got {n} chars so far). stderr tail: {e}",
+                    s=_CLI_IDLE_TIMEOUT_S, n=len(full_text),
+                    e=" | ".join(list(stderr_tail)[-3:]) or "(none)",
+                )
+                if proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except (ProcessLookupError, OSError):
+                        pass
+                yield {
+                    "kind": "warning",
+                    "level": "cli_timeout",
+                    "text": (
+                        f"Captain went silent for {int(_CLI_IDLE_TIMEOUT_S)}s — "
+                        "turn terminated. Resend to continue."
+                    ),
+                }
+                break
             if line_b is None:
                 # Reader thread finished — stdout closed.
                 break
@@ -1898,7 +2000,9 @@ async def _stream_claude_cli(
                 # plain text mode? buffer as token
                 yield {"kind": "token", "text": line}
                 full_text += line
+                saw_any_event = True
                 continue
+            saw_any_event = True
             etype = evt.get("type")
 
             if etype == "system":
@@ -2037,7 +2141,17 @@ async def _stream_claude_cli(
         # Drain process: await reader-thread finish in a thread to avoid
         # blocking the event loop.
         await asyncio.to_thread(reader_thread.join, 10.0)
-        await asyncio.to_thread(proc.wait, 5.0)
+        try:
+            await asyncio.to_thread(proc.wait, 5.0)
+        except subprocess.TimeoutExpired:
+            # Child lingered at exit (e.g. slow MCP teardown). Don't let that
+            # turn a completed turn into an error frame — kill it and continue
+            # to the normal post-loop bookkeeping (cost, HARDEN-8, judge).
+            try:
+                proc.kill()
+                await asyncio.to_thread(proc.wait, 5.0)
+            except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+                pass
     finally:
         watcher_task.cancel()
         try:
@@ -2063,7 +2177,15 @@ async def _stream_claude_cli(
     # and rerun this turn fresh. No retry loop is possible: the rerun has no
     # saved session, so this branch can't trigger again.
     aborted = abort_event is not None and abort_event.is_set()
-    if prior_session and not full_text.strip() and not aborted:
+    stale_resume = (
+        prior_session
+        and not full_text.strip()
+        and not aborted
+        and not cli_timed_out          # a wedged/killed turn is not a stale session
+        and not saw_any_event          # a turn that ran real work is not stale
+        and proc.returncode not in (0, None)  # stale resume exits non-zero
+    )
+    if stale_resume:
         logger.warning(
             "Claude CLI resume produced no output (exit {rc}) — dropping session {sid} and retrying fresh",
             rc=proc.returncode, sid=prior_session,
@@ -2537,6 +2659,18 @@ def _memory_prompt_snippet(project: str) -> str:
     from core import project_memory
 
     progress = project_memory.read_progress(project).strip()
+    # Cap the wholesale injection. progress.md grows unbounded across a long
+    # project (one incident hit a 213KB prompt / 127KB progress file); pasting
+    # it verbatim into EVERY turn balloons cost and latency. Keep the tail —
+    # the most recent decisions / open bugs live at the bottom — and point the
+    # captain at the full file on disk if it needs older context.
+    _PROGRESS_MAX = 12_000
+    if len(progress) > _PROGRESS_MAX:
+        progress = (
+            f"[…{len(progress) - _PROGRESS_MAX} earlier chars truncated — "
+            f"read `.omc/state/{project}/progress.md` for the full log]\n\n"
+            + progress[-_PROGRESS_MAX:]
+        )
     failures = project_memory.failure_log_tail(project, limit=8)
     if not progress and not failures:
         return ""

@@ -57,6 +57,17 @@ _TEXT_EXTS = {
     ".html", ".htm", ".xml", ".toml", ".ini", ".cfg", ".sh", ".bat", ".ps1",
 }
 
+# Extensions that would EXECUTE (not just display) under their default Windows
+# handler. `os.startfile` on these is remote-code-execution the moment a
+# malicious project drops one in — so /api/fs/open reveals them in Explorer
+# instead of launching them. (Text ones like .bat/.ps1 already route to notepad
+# via _TEXT_EXTS above; this list is the belt-and-braces for the startfile arm.)
+_UNSAFE_OPEN_EXTS = {
+    ".exe", ".com", ".scr", ".pif", ".msi", ".msp", ".cpl", ".hta",
+    ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".wsh", ".lnk", ".reg", ".jar", ".gadget", ".application",
+}
+
 
 # Source files surfaced by the in-app code editor tree/read. Anything not in
 # this set (binary assets like .png/.jpg/.mp3/.ttf, lockfiles' siblings, etc.)
@@ -143,6 +154,15 @@ async def open_path(req: OpenRequest) -> dict[str, Any]:
                 subprocess.Popen(["explorer.exe", str(resolved)])
             elif resolved.is_file() and ext in _TEXT_EXTS:
                 subprocess.Popen(["notepad.exe", str(resolved)])
+            elif resolved.is_file() and ext in _UNSAFE_OPEN_EXTS:
+                # Never launch an executable/script with its default handler —
+                # a malicious project file would run code. Reveal it instead.
+                subprocess.Popen(["explorer.exe", "/select,", str(resolved)])
+                return {
+                    "ok": True, "path": str(resolved),
+                    "action": "reveal", "system": system,
+                    "note": f"{ext} is executable — revealed in Explorer instead of opened.",
+                }
             else:
                 os.startfile(str(resolved))  # type: ignore[attr-defined]  # noqa: S606  (Windows-only)
         elif system == "Darwin":

@@ -111,7 +111,21 @@ class DeepSeekV4Client:
         model: str | None = None,
         timeout: float = 120.0,
     ) -> None:
-        self._api_key = api_key or settings.deepseek_api_key.get_secret_value()
+        # settings.deepseek_api_key is Optional[SecretStr] — calling
+        # .get_secret_value() on the None default raises an opaque
+        # AttributeError on any install without the key (DeepSeek is the default
+        # text route, so that's every no-key setup). Fail with a clear message.
+        key = api_key or (
+            settings.deepseek_api_key.get_secret_value()
+            if settings.deepseek_api_key
+            else None
+        )
+        if not key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY is not configured — set it in .env or in "
+                "Settings → API keys to use the DeepSeek text/vision routes."
+            )
+        self._api_key = key
         self._base_url = (base_url or settings.deepseek_base_url).rstrip("/")
         self._model = model or settings.deepseek_model
         self._timeout = timeout

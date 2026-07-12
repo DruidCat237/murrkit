@@ -284,6 +284,12 @@ async def get_balance(*, force_refresh: bool = False) -> BalanceInfo:
             _BALANCE_CACHE[cache_key] = (info, time.time())
             return info
         if r.status_code != 200:
+            # Transient upstream hiccup (502/503/timeout page) — a recent good
+            # balance is far more useful than zeroing the user out and blocking
+            # every paid action. Serve the cache if we have one.
+            cached = _BALANCE_CACHE.get(cache_key)
+            if cached is not None:
+                return cached[0]
             return BalanceInfo(
                 mode="kitty_app",
                 credits_remaining=0,
@@ -318,6 +324,12 @@ async def get_balance(*, force_refresh: bool = False) -> BalanceInfo:
         return info
     except Exception as e:  # noqa: BLE001
         logger.warning("DruidCat /balance fetch error: {e}", e=str(e)[:200])
+        # Network blip / DNS / timeout — the error string already promises a
+        # cached fallback, so actually honour it: return the last good balance
+        # if one is cached rather than falsely zeroing the user's credits.
+        cached = _BALANCE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached[0]
         return BalanceInfo(
             mode="kitty_app",
             credits_remaining=0,
@@ -327,7 +339,7 @@ async def get_balance(*, force_refresh: bool = False) -> BalanceInfo:
             tier_label="Offline",
             tier_color="amber",
             ok=False,
-            error=f"Couldn't reach DruidCat ({type(e).__name__}). Falling back to cached value.",
+            error=f"Couldn't reach DruidCat ({type(e).__name__}) and no cached balance yet.",
             topup_url=get_topup_url(),
             account_url=get_account_url(),
         )

@@ -104,6 +104,21 @@ def _classify(name: str, parent: str) -> str:
     return "other"
 
 
+def _safe_project_dir(project_name: str) -> Path:
+    """Resolve `projects/<project_name>` and refuse anything that escapes it.
+
+    FastAPI binds `{project_name}` to any non-slash segment, and percent-encoded
+    separators decode only AFTER routing — so `..%2f..%2f.env` would otherwise
+    resolve outside PROJECTS_DIR and let the zip/listing endpoints read the
+    repo's `.env` or arbitrary files. Contain it and 400 on traversal.
+    """
+    root = PROJECTS_DIR.resolve()
+    proj = (root / project_name).resolve()
+    if proj != root and not proj.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="invalid project name")
+    return proj
+
+
 def _skip(p: Path) -> bool:
     """True if this file should NOT show up in the browser."""
     if p.name in _IGNORE_NAMES:
@@ -156,7 +171,7 @@ async def get_library(project_name: str) -> ProjectLibrary:
     """
     assets: list[LibraryAsset] = []
     total = 0
-    proj = (PROJECTS_DIR / project_name).resolve()
+    proj = _safe_project_dir(project_name)
 
     if proj.is_dir():
         for p in proj.rglob("*"):
@@ -255,6 +270,7 @@ async def serve_asset_raw(project_name: str, asset_id: str) -> FileResponse:
 @router.get("/{project_name}/zip")
 async def download_project_zip(project_name: str) -> StreamingResponse:
     """Stream a ZIP of the project (engine Assets/ + legacy + chat history)."""
+    safe_proj = _safe_project_dir(project_name)  # 400s on path traversal
     buf = io.BytesIO()
     unity_assets = (settings.unity_project_path / "Assets").resolve()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -268,7 +284,7 @@ async def download_project_zip(project_name: str) -> StreamingResponse:
                         continue
                     arc = f"{project_name}/Assets/" + p.relative_to(unity_assets).as_posix()
                     zf.write(p, arc)
-        proj = PROJECTS_DIR / project_name
+        proj = safe_proj
         if proj.is_dir():
             for p in proj.rglob("*"):
                 if p.is_file() and not _skip(p):
