@@ -33,6 +33,7 @@ import type {
   QueueWsEvent,
   GameBuild,
   GameBuildWsEvent,
+  AiPaintResult,
   MapDetail,
   MapListEntry,
   MapParseResult,
@@ -381,6 +382,19 @@ export async function saveMap(
 /** Validate a yaml string without writing (live editor feedback). */
 export async function parseMap(yamlText: string): Promise<MapParseResult> {
   return post<MapParseResult>(`/api/maps/parse`, { yaml_text: yamlText });
+}
+
+/** Ask the AI painter (DeepSeek) for a paint-layer proposal. Reads the SAVED
+ *  map file server-side; the result is applied in the panel, not on disk. */
+export async function aiPaintMap(
+  mapId: string,
+  instruction: string,
+  rowsHint?: string[],
+): Promise<AiPaintResult> {
+  return post<AiPaintResult>(`/api/maps/${encodeURIComponent(mapId)}/ai-paint`, {
+    instruction,
+    rows_hint: rowsHint ?? null,
+  });
 }
 
 /**

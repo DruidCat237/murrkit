@@ -693,6 +693,8 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
         biome = str((t.extra or {}).get("biome") or name)
 
         async def biome_worker(task: gq.QueueTask, handle: gq.QueueTaskHandle) -> None:
+            import asyncio as _asyncio
+
             from agents.asset_pipeline import generate_biome_tileset
 
             await handle.progress(5, f"generating biome tileset ({biome})")
@@ -709,6 +711,20 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             )
             await handle.stop_heartbeat()
             await handle.progress(95, "slicing + publishing tileset")
+            # Auto-wire: put the published path into every map.yaml that
+            # declares this biome without an `image:` — the map re-renders
+            # with real art on next load, zero manual edits. Best-effort:
+            # a wiring failure must never fail a task whose art is already
+            # paid for and published.
+            auto_wired: list[str] = []
+            try:
+                from backend.routers.maps import auto_wire_biome_image
+
+                auto_wired = await _asyncio.to_thread(
+                    auto_wire_biome_image, biome, result.metadata.get("map_yaml_image"),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("biome_tileset {b}: auto-wire failed: {e}", b=biome, e=e)
             await handle.complete(
                 thumbnail_url=_thumb_url(result.files[0]) if result.files else None,
                 cost_usd=result.cost_usd,
@@ -716,8 +732,9 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
                     "asset_type": result.asset_type,
                     "files": [str(f) for f in result.files],
                     "biome": biome,
-                    # The one-liner the captain adds to map.yaml as `image:`.
+                    # The path now referenced by map.yaml `image:` (auto-wired).
                     "map_yaml_image": result.metadata.get("map_yaml_image"),
+                    "auto_wired_maps": auto_wired,
                 },
             )
 

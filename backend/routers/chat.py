@@ -3738,6 +3738,22 @@ def _build_captain_prompt(
         "Regiony w `biomes`: `rect` (drogi, jeziora, pomieszczenia) + `seed` "
         "(Voronoi — organiczne płaty). Warianty/decory rozrzuca seedowany "
         "PRNG — ta sama mapa buduje się bajt-w-bajt tak samo.",
+        "  - PRECYZYJNE malowanie per-kafel (RPG-Maker-style): blok `paint:` "
+        "w map.yaml — `legend: { \"g\": grass, \"w\": water }` (klucze "
+        "ZAWSZE w cudzysłowie — gołe y/n to booleany w yaml) + `rows:` lista "
+        "stringów, jeden znak = jeden kafel, `.` = zostaw wynik proceduralny. "
+        "Nakładane PO regionach. Krótsze wiersze/mniej wierszy = reszta "
+        "nietknięta, więc diffy są małe. Chcesz coś dorysować dokładnie "
+        "(polana, droga po skosie, plaża) → edytuj `paint.rows`, NIE dokładaj "
+        "dziesiątek rectów.",
+        "  - AUTO-IMAGE: gdy task `biome_tileset` się kończy, backend SAM "
+        "wpisuje `image:` do każdej mapy deklarującej ten biom bez obrazka "
+        "(wynik w extra.auto_wired_maps taska). NIE edytuj `image:` ręcznie "
+        "po generacji — sprawdź tylko playtestem, że mapa dostała grafikę.",
+        "  - Człowiek maluje w zakładce Map Studio (pędzel/prostokąt/fill + "
+        "tryby auto: presety proceduralne i AI-paint przez DeepSeek pod "
+        "POST /api/maps/<id>/ai-paint). TY malujesz pisząc `paint.rows` "
+        "bezpośrednio — jesteś modelem językowym, nie wołaj ai-paint.",
         "  - REST: GET /api/maps · GET/PUT /api/maps/<id> (PUT waliduje jak "
         "kompilator i odrzuca zepsuty spec) · POST /api/maps/parse (walidacja "
         "bez zapisu). Wzorzec pracy: napisz/edytuj map.yaml → playtest → "

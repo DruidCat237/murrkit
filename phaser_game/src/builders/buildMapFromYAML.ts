@@ -102,6 +102,23 @@ export function compileMap(spec: MapSpec): CompiledMap {
     }
   }
 
+  // ---- paint layer: per-cell overrides win over every region --------------
+  // (Validation already guaranteed legend chars map to declared biomes.)
+  if (spec.paint) {
+    const legend = spec.paint.legend;
+    const nRows = Math.min(H, spec.paint.rows.length);
+    for (let y = 0; y < nRows; y++) {
+      const row = spec.paint.rows[y];
+      const nCols = Math.min(W, row.length);
+      for (let x = 0; x < nCols; x++) {
+        const ch = row[x];
+        if (ch === ".") continue;
+        const bi = biomeIndex.get(legend[ch]);
+        if (bi !== undefined) grid[y * W + x] = bi;
+      }
+    }
+  }
+
   // ---- pick tiles: interior variants + edge/corner transitions ------------
   const firstGids = spec.tilesets.map((_, i) => 1 + i * MAP_TILESET_TILECOUNT);
   const at = (x: number, y: number, self: number): number =>

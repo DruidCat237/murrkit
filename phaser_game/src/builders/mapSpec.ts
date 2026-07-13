@@ -70,6 +70,21 @@ export interface MapObjectSpec {
   y: number;
 }
 
+/**
+ * Per-cell paint layer — the RPG-Maker-style precision pass. Applied AFTER
+ * `biomes` regions: any cell whose char maps to a biome overrides the
+ * procedural base; "." (or an unmapped char) keeps it. Rows shorter than
+ * `width` and missing trailing rows leave those cells untouched, so paint
+ * diffs stay minimal. Both the Map Studio painter and the captain write this
+ * block — it is plain text, so map edits stay git-diffable.
+ */
+export interface PaintSpec {
+  /** single character → biome id declared in `tilesets` */
+  legend: Record<string, string>;
+  /** row-major strings, one char per cell, "." = no override */
+  rows: string[];
+}
+
 export interface MapSpec {
   id: string;
   /** Tile edge in px (square tiles). */
@@ -84,6 +99,7 @@ export interface MapSpec {
   defaultBiome?: string;
   tilesets: BiomeTilesetSpec[];
   biomes?: BiomeRegionSpec[];
+  paint?: PaintSpec;
   objects?: MapObjectSpec[];
   notes?: string;
 }
@@ -122,6 +138,35 @@ export function validateMapSpec(spec: unknown): asserts spec is MapSpec {
   }
   if (s.defaultBiome && !biomeNames.has(s.defaultBiome)) {
     throw new Error(`map '${s.id}': defaultBiome '${s.defaultBiome}' not declared in \`tilesets\``);
+  }
+  if (s.paint !== undefined) {
+    const p = s.paint as Partial<PaintSpec> | null;
+    if (!p || typeof p !== "object" || !p.legend || typeof p.legend !== "object" || !Array.isArray(p.rows)) {
+      throw new Error(`map '${s.id}': \`paint\` needs \`legend\` (char→biome) and \`rows\` (strings)`);
+    }
+    for (const [ch, b] of Object.entries(p.legend)) {
+      if (ch.length !== 1 || ch === ".") {
+        throw new Error(`map '${s.id}': paint legend key '${ch}' must be a single char (not '.')`);
+      }
+      if (typeof b !== "string" || !biomeNames.has(b)) {
+        throw new Error(`map '${s.id}': paint legend '${ch}' → unknown biome '${b}'`);
+      }
+    }
+    if (p.rows.length > (s.height as number)) {
+      throw new Error(`map '${s.id}': paint has ${p.rows.length} rows but map height is ${s.height}`);
+    }
+    for (let y = 0; y < p.rows.length; y++) {
+      const row = p.rows[y];
+      if (typeof row !== "string") throw new Error(`map '${s.id}': paint row ${y} is not a string`);
+      if (row.length > (s.width as number)) {
+        throw new Error(`map '${s.id}': paint row ${y} is ${row.length} chars but map width is ${s.width}`);
+      }
+      for (const ch of row) {
+        if (ch !== "." && p.legend[ch] === undefined) {
+          throw new Error(`map '${s.id}': paint row ${y} uses char '${ch}' missing from legend`);
+        }
+      }
+    }
   }
 }
 

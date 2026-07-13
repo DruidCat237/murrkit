@@ -416,6 +416,17 @@ export interface MapParseResult {
   errors: string[];
 }
 
+/** Proposal from POST /api/maps/{id}/ai-paint — applied client-side, never
+ *  written to disk by the backend. */
+export interface AiPaintResult {
+  ok: boolean;
+  legend: Record<string, string>;
+  rows: string[];
+  /** >1 when the model painted at 1/k scale and the grid was upscaled. */
+  downscale: number;
+  cost_usd: number;
+}
+
 // ---- v2: User Reference Materials (drag-drop folder) ------------------------
 
 export interface ReferenceFile {

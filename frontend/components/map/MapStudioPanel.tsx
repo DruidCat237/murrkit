@@ -18,8 +18,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, Loader2, Map as MapIcon, Plus, RefreshCw, Save, Wand2 } from "lucide-react";
-import { getMap, listMaps, parseMap, planBiomeTilesets, saveMap } from "@/lib/api";
+import { aiPaintMap, getMap, listMaps, parseMap, planBiomeTilesets, saveMap } from "@/lib/api";
 import type { MapDetail, MapListEntry, MapTilesetStatus } from "@/lib/types";
+import { applyPaintBlockToYaml, type PaintableSpec } from "@/lib/mapPaint";
+import MapPainter from "./MapPainter";
 import { useToasts } from "../Toaster";
 import { useLayout } from "@/store/layout";
 
@@ -44,13 +46,7 @@ objects:
   - { name: hero_start, type: spawn, x: 6, y: 6 }
 `;
 
-interface SpecLite {
-  width?: number;
-  height?: number;
-  defaultBiome?: string;
-  tilesets?: Array<{ biome: string; color?: string }>;
-  biomes?: Array<{ biome: string; rect?: number[]; seed?: number[] }>;
-}
+type SpecLite = PaintableSpec & { notes?: string };
 
 export default function MapStudioPanel({ projectName }: { projectName: string }) {
   const toast = useToasts();
@@ -74,6 +70,8 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
 
   const [prompts, setPrompts] = useState<Record<string, string>>({});
   const [staging, setStaging] = useState<string | null>(null); // biome being staged, or "*"
+  const [viewMode, setViewMode] = useState<"paint" | "yaml">("paint");
+  const [aiBusy, setAiBusy] = useState(false);
 
   // Refs mirroring fast-changing state, so async callbacks can check the
   // LATEST value after an await instead of their stale closure copy.
@@ -238,6 +236,35 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
     }
   }, [detail, dirty, projectName, promptFor, toast, openQueue]);
 
+  // Painter → yaml: swap only the `paint:` block (comments elsewhere survive),
+  // then the normal dirty/validate/Save flow takes over.
+  const onApplyPaint = useCallback((block: string | null) => {
+    applyYaml(applyPaintBlockToYaml(yamlRef.current, block));
+    setDirty(true);
+  }, [applyYaml]);
+
+  const onAiPaint = useCallback(async (instruction: string, rowsHint: string[]) => {
+    if (!selected) return null;
+    if (dirty) {
+      toast.warn("Zapisz mapę przed AI paint — model czyta zapisany plik.");
+      return null;
+    }
+    setAiBusy(true);
+    try {
+      const res = await aiPaintMap(selected, instruction, rowsHint);
+      toast.success(
+        `AI pomalowało mapę ($${res.cost_usd.toFixed(3)}` +
+        `${res.downscale > 1 ? `, malowane w skali 1/${res.downscale}` : ""}) — Ctrl+Z cofa`,
+      );
+      return { legend: res.legend, rows: res.rows };
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+      return null;
+    } finally {
+      setAiBusy(false);
+    }
+  }, [selected, dirty, toast]);
+
   const valid = liveErrors.length === 0;
   const missing = detail?.tilesets.filter((t) => !t.suggested_exists && !t.image_exists) ?? [];
 
@@ -354,14 +381,40 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
 
             {!detailLoading && (
               <div className="flex-1 min-h-0 flex">
-                {/* editor */}
+                {/* editor area: RPG-Maker painter | raw YAML */}
                 <div className="flex-1 min-w-0 flex flex-col border-r border-line">
-                  <textarea
-                    value={yamlText}
-                    onChange={(e) => { applyYaml(e.target.value); setDirty(true); }}
-                    spellCheck={false}
-                    className="flex-1 min-h-0 w-full resize-none bg-transparent p-3 font-mono text-xs outline-none"
-                  />
+                  <div className="flex items-center gap-1 px-2 py-1 border-b border-line">
+                    <button
+                      className={`btn-ghost rounded px-2 py-0.5 text-xs ${viewMode === "paint" ? "bg-white/15 font-semibold" : ""}`}
+                      onClick={() => setViewMode("paint")}
+                      title="Maluj mapę per-kafel (pędzel, prostokąt, wypełnianie, AI)"
+                    >
+                      Paint
+                    </button>
+                    <button
+                      className={`btn-ghost rounded px-2 py-0.5 text-xs ${viewMode === "yaml" ? "bg-white/15 font-semibold" : ""}`}
+                      onClick={() => setViewMode("yaml")}
+                      title="Surowy map.yaml — ten sam plik edytuje kapitan"
+                    >
+                      YAML
+                    </button>
+                  </div>
+                  {viewMode === "paint" ? (
+                    <MapPainter
+                      key={selected /* full remount per map — unapplied strokes must never leak across maps */}
+                      spec={valid ? (liveSpec as SpecLite) : null}
+                      aiBusy={aiBusy}
+                      onApply={onApplyPaint}
+                      onAiPaint={onAiPaint}
+                    />
+                  ) : (
+                    <textarea
+                      value={yamlText}
+                      onChange={(e) => { applyYaml(e.target.value); setDirty(true); }}
+                      spellCheck={false}
+                      className="flex-1 min-h-0 w-full resize-none bg-transparent p-3 font-mono text-xs outline-none"
+                    />
+                  )}
                   {(liveErrors.length > 0 || saveError) && (
                     <div className="max-h-28 overflow-y-auto border-t border-line p-2 text-xs text-red-400 select-text space-y-0.5">
                       {saveError && <div>save failed: {saveError}</div>}
@@ -370,9 +423,8 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
                   )}
                 </div>
 
-                {/* right: preview + biomes */}
+                {/* right: biome tilesets */}
                 <div className="w-72 shrink-0 flex flex-col overflow-y-auto">
-                  <RegionPreview spec={valid ? liveSpec : null} />
                   <div className="px-3 py-2 border-t border-line">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-semibold">Biome tilesets</span>
@@ -444,87 +496,5 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
   );
 }
 
-/**
- * Approximate biome-REGION preview (rect order + Voronoi) at 1 px per tile,
- * scaled with nearest-neighbour. Lockstep with compileMap's painting rules.
- */
-function RegionPreview({ spec }: { spec: SpecLite | null }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const W = spec?.width ?? 0, H = spec?.height ?? 0;
-    if (!spec || !spec.tilesets?.length || W < 1 || H < 1 || W * H > 512 * 512) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-    canvas.width = W; canvas.height = H;
-
-    const colorOf = new Map<string, string>();
-    for (const t of spec.tilesets) colorOf.set(t.biome, t.color ?? fallbackColor(t.biome));
-    const defaultBiome = spec.defaultBiome ?? spec.tilesets[0].biome;
-
-    const grid: string[] = new Array(W * H).fill(defaultBiome);
-    const claimed = new Uint8Array(W * H);
-    const seeds: Array<{ x: number; y: number; biome: string }> = [];
-    for (const r of spec.biomes ?? []) {
-      if (r.rect && r.rect.length === 4) {
-        const [rx, ry, rw, rh] = r.rect;
-        for (let y = Math.max(0, ry); y < Math.min(H, ry + rh); y++) {
-          for (let x = Math.max(0, rx); x < Math.min(W, rx + rw); x++) {
-            grid[y * W + x] = r.biome; claimed[y * W + x] = 1;
-          }
-        }
-      }
-      if (r.seed && r.seed.length === 2) seeds.push({ x: r.seed[0], y: r.seed[1], biome: r.biome });
-    }
-    if (seeds.length > 0) {
-      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const i = y * W + x;
-        if (claimed[i]) continue;
-        let best = seeds[0], bestD = Infinity;
-        for (const s of seeds) {
-          const d = (x - s.x) ** 2 + (y - s.y) ** 2;
-          if (d < bestD) { bestD = d; best = s; }
-        }
-        grid[i] = best.biome;
-      }
-    }
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      ctx.fillStyle = colorOf.get(grid[y * W + x]) ?? "#666";
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }, [spec]);
-
-  return (
-    <div className="p-3">
-      <div className="text-xs font-semibold mb-1">Region preview</div>
-      {spec ? (
-        <canvas
-          ref={canvasRef}
-          className="w-full rounded border border-line"
-          style={{ imageRendering: "pixelated" }}
-        />
-      ) : (
-        <div className="text-xs opacity-60 rounded border border-line p-3">
-          Preview appears when the YAML is valid.
-        </div>
-      )}
-      <p className="text-[10px] opacity-50 mt-1">
-        Regions only — transitions, variants and decor render in the game
-        (Open in game ↗).
-      </p>
-    </div>
-  );
-}
-
-/** Same FNV-1a fallback hue the game compiler uses for colourless biomes. */
-function fallbackColor(biome: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < biome.length; i++) { h ^= biome.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  const hue = (h >>> 0) % 360;
-  return `hsl(${hue}deg 45% 45%)`;
-}
+// (The old approximate RegionPreview was superseded by MapPainter, which
+// renders the exact base+paint merge and edits it in place.)

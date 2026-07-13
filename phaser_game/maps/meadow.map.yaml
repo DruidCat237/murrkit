@@ -44,6 +44,18 @@ biomes:
   - { biome: water, rect: [30, 22, 12, 9] }    # lake
   - { biome: water, rect: [28, 24, 2, 5] }     # lake's ragged west bay
 
+# Precision pass (RPG-Maker-style): per-cell chars override the regions
+# above. "." = keep the procedural result; short rows leave the rest alone.
+# Here: a small sand plaza with two forest groves in the NW corner.
+paint:
+  legend: { g: grass, f: forest, s: sand, w: water }
+  rows:
+    - "................"
+    - ".ssss..........."
+    - ".sffs..........."
+    - ".sffs..........."
+    - ".ssss..........."
+
 objects:
   - { name: hero_start, type: spawn, x: 6.5, y: 18 }
   - { name: lake_marker, type: marker, x: 36, y: 26 }
