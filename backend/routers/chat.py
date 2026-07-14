@@ -805,6 +805,214 @@ async def chat_autoplay(ws: WebSocket) -> None:
             pass
 
 
+# ---- Work loop (ralph-style autonomous work mode) ----------------------------
+#
+# OPT-IN. Sibling of /autoplay generalized past play→fix: no automated test
+# decides the round — the CAPTAIN does, via a mandatory end-of-turn marker
+# (LOOP_CONTINUE / LOOP_DONE / LOOP_BLOCKED). The task prompt is re-injected
+# verbatim every round (ralph-style), the per-project CLI session is resumed,
+# and the same hard guards apply: iteration cap, budget cap, stuck detection
+# (identical marker 3× in a row). Pure logic in backend/services/work_loop.py.
+
+
+@router.websocket("/loop")
+async def chat_loop(ws: WebSocket) -> None:
+    """
+    Autonomous work loop for one project ("the boulder never stops").
+
+    Client → server (first message, JSON):
+        {
+          "task_id": "<uuid>"            (optional — for /abort)
+          "project_name": "...",
+          "prompt": "the task, re-injected verbatim every round",
+          "max_iters": 8,                (optional; HARD CAP 25)
+          "budget_usd": 6.0              (optional; HARD CAP 20.0)
+        }
+
+    Server → client streams the SAME event shape /stream uses (started/token/
+    thought/tool_use/tool_result/final/warning/error/aborted) PLUS:
+        {kind:"loop_iter", i, status, detail, cost_so_far}   — one per round
+        {kind:"loop_done", reason:"done"|"blocked"|"caps"|"stuck",
+                           detail, iters, cost}              — terminal
+    """
+    from backend.services import work_loop as wl
+
+    if not _ws_origin_ok(ws):
+        await ws.close(code=1008)  # policy violation — cross-site handshake
+        return
+    await ws.accept()
+    task_id: str | None = None
+    task: _Task | None = None
+    cost_so_far = 0.0
+    iters_run = 0
+    done_reason: str | None = None
+    done_detail = ""
+    try:
+        raw = await ws.receive_text()
+        req = json.loads(raw)
+        task_id = req.get("task_id") or uuid.uuid4().hex
+        try:
+            cfg = wl.WorkLoopConfig.from_request(req)
+        except ValueError as e:
+            await ws.send_text(json.dumps({"kind": "error", "error": str(e)}))
+            return
+
+        # Heavy route, same as autoplay — the loop is the captain working.
+        model_choice = _resolve_model_choice("claude_opus")
+        task = _Task(task_id=task_id, kind="claude_cli")
+        _tasks[task_id] = task
+
+        await ws.send_text(json.dumps(
+            {"kind": "started", "task_id": task_id, "model": model_choice}
+        ))
+
+        rounds: list[dict[str, Any]] = []
+        recent_signatures: list[str] = []
+        prev_marker: wl.LoopMarker | None = None
+        loop_log_path = _project_memory.progress_path(cfg.project_name).parent / "loop_log.md"
+
+        for i in range(cfg.max_iters):
+            if task.abort_event.is_set():
+                await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                done_reason = done_reason or "caps"
+                break
+
+            pre = wl.should_block_before_iteration(
+                cost_so_far=cost_so_far, budget_usd=cfg.budget_usd
+            )
+            if pre.stop:
+                done_reason = pre.reason
+                done_detail = pre.detail
+                await ws.send_text(json.dumps({
+                    "kind": "warning", "level": "loop_caps", "text": pre.detail,
+                }))
+                break
+
+            iters_run = i + 1
+            prompt = wl.build_iteration_prompt(cfg=cfg, iteration=i, prev=prev_marker)
+
+            # --- 1. Inner Claude turn (reuse the CLI streamer verbatim) ------
+            turn_cost = 0.0
+            final_text = ""
+            async for chunk in _stream_claude_cli(
+                prompt,
+                attachments=None,
+                model_choice=model_choice,
+                abort_event=task.abort_event,
+                task=task,
+                project_name=cfg.project_name,
+            ):
+                if task.abort_event.is_set():
+                    await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                    break
+                await ws.send_text(json.dumps(chunk))
+                if chunk.get("kind") == "final":
+                    turn_cost = float(chunk.get("cost_usd", 0.0) or 0.0)
+                    final_text = str(chunk.get("text") or "")
+                elif chunk.get("kind") == "token":
+                    final_text += str(chunk.get("text") or "")
+            if task.abort_event.is_set():
+                done_reason = done_reason or "caps"
+                break
+            cost_so_far += turn_cost
+
+            # --- 2. The captain's marker IS the round verdict -----------------
+            marker = wl.parse_marker(final_text)
+            prev_marker = marker
+            recent_signatures.append(marker.signature)
+
+            await ws.send_text(json.dumps({
+                "kind": "loop_iter",
+                "i": i,
+                "status": marker.status,
+                "detail": marker.detail,
+                "cost_so_far": round(cost_so_far, 6),
+            }))
+            rounds.append({
+                "i": i,
+                "status": marker.status,
+                "detail": marker.detail,
+                "signature": marker.signature,
+                "cost_so_far": round(cost_so_far, 6),
+            })
+
+            # Persist the loop's own audit log every round (progress.md is the
+            # captain's file — the loop never overwrites it).
+            loop_log_path.parent.mkdir(parents=True, exist_ok=True)
+            loop_log_path.write_text(
+                wl.render_loop_log(
+                    cfg=cfg, rounds=rounds, done_reason=None, cost_so_far=cost_so_far
+                ),
+                encoding="utf-8",
+            )
+
+            # --- 3. Stop logic -------------------------------------------------
+            decision = wl.evaluate_stop(
+                marker=marker,
+                iteration=i,
+                max_iters=cfg.max_iters,
+                cost_so_far=cost_so_far,
+                budget_usd=cfg.budget_usd,
+                recent_signatures=recent_signatures,
+            )
+            if decision.stop:
+                done_reason = decision.reason
+                done_detail = decision.detail
+                if decision.reason in ("caps", "stuck"):
+                    await ws.send_text(json.dumps({
+                        "kind": "warning",
+                        "level": f"loop_{decision.reason}",
+                        "text": decision.detail,
+                    }))
+                break
+
+        if done_reason is None:
+            done_reason = "caps"
+
+        loop_log_path.parent.mkdir(parents=True, exist_ok=True)
+        loop_log_path.write_text(
+            wl.render_loop_log(
+                cfg=cfg,
+                rounds=rounds,
+                done_reason=done_reason,  # type: ignore[arg-type]
+                cost_so_far=cost_so_far,
+            ),
+            encoding="utf-8",
+        )
+        await ws.send_text(json.dumps({
+            "kind": "loop_done",
+            "reason": done_reason,
+            "detail": done_detail,
+            "iters": iters_run,
+            "cost": round(cost_so_far, 6),
+        }))
+
+    except WebSocketDisconnect:
+        logger.info("Work-loop WS disconnected (task={t})", t=task_id)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Work-loop WS error")
+        try:
+            await ws.send_text(json.dumps({"kind": "error", "error": str(e)[:300]}))
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        # Mirror chat_stream/autoplay cleanup: a dashboard disconnect mid-turn
+        # must abort AND terminate the inner CLI, or an orphaned captain keeps
+        # looping (and burning tokens) with nobody watching.
+        t = _tasks.pop(task_id, None) if task_id else None
+        if t is not None:
+            t.abort_event.set()
+            if t.proc is not None and t.proc.poll() is None:
+                try:
+                    t.proc.terminate()
+                except (ProcessLookupError, OSError):  # noqa: BLE001
+                    pass
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # ---- DeepSeek backend -------------------------------------------------------
 
 
@@ -3765,6 +3973,24 @@ def _build_captain_prompt(
         "kompilator i odrzuca zepsuty spec) · POST /api/maps/parse (walidacja "
         "bez zapisu). Wzorzec pracy: napisz/edytuj map.yaml → playtest → "
         "vision-gate → dopiero potem tilesety biomów przez plan/accept.",
+        "",
+        "## WORK LOOP — protokół pętli roboczej (gdy prompt zaczyna się od "
+        "'## WORK LOOP')",
+        "Jesteś wtedy w autonomicznej pętli (WS /api/chat/loop): to samo "
+        "zadanie wraca co rundę, a Twoja OSTATNIA linia odpowiedzi steruje "
+        "pętlą. Obowiązki rundy: JEDEN domknięty przyrost → weryfikacja "
+        "(playtest/drive/test) → aktualizacja progress.md → marker:",
+        "  - `LOOP_CONTINUE: <co zrobiłeś + co dalej>` — pętla odpala kolejną "
+        "rundę; wpisz konkret, bo to Twoja pamięć robocza między rundami.",
+        "  - `LOOP_DONE: <dowód weryfikacji>` — CAŁE zadanie skończone; tylko "
+        "ze świeżym dowodem (wynik testu/smoke/screenshot), nigdy 'na pamięć'.",
+        "  - `LOOP_BLOCKED: <czego potrzebujesz>` — potrzebna decyzja "
+        "człowieka; pętla staje i pokazuje mu Twoje pytanie.",
+        "NIE zadawaj pytań w treści (nikt nie odpowie) — od tego jest "
+        "LOOP_BLOCKED. Trzy identyczne markery z rzędu = pętla uznaje Cię za "
+        "zaciętego i staje; jeśli kręcisz się w miejscu, zmień podejście "
+        "albo zablokuj się świadomie. Log rund: .omc/state/<project>/loop_log.md "
+        "(pisze go backend — nie edytuj).",
         "",
         "## Parallel tool calling (W&D pattern) [EXP-4 PHASE D]",
         "Per arXiv 2602.07359 (W&D, 2026): width-over-depth scaling beats "

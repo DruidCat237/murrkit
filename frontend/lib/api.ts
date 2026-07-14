@@ -14,6 +14,7 @@ import type {
   ChatHistoryItem,
   ChatModel,
   ChatStreamEvent,
+  LoopStreamEvent,
   ConfigSnapshot,
   ContextSnapshot,
   CostSnapshot,
@@ -459,6 +460,39 @@ export function openChatStream(
   // doubles its attempts each round (exponential storm). `close` always
   // follows, so a no-op here keeps onClose firing exactly once per socket.
   ws.onerror = () => {};
+  return ws;
+}
+
+/**
+ * Open a WORK-LOOP WebSocket (`/api/chat/loop`) — ralph-style autonomous
+ * captain loop. Same event shape as the chat stream per round, plus
+ * `loop_iter` after every round and a terminal `loop_done`. NOTE: `final`
+ * ends one ROUND here, not the stream — keep the socket until `loop_done`.
+ * Caller is responsible for closing the socket when done.
+ */
+export function openLoopStream(
+  payload: {
+    task_id: string;
+    project_name: string;
+    prompt: string;
+    max_iters?: number;
+    budget_usd?: number;
+  },
+  onEvent: (e: LoopStreamEvent) => void,
+  onClose?: () => void
+): WebSocket {
+  const wsUrl = BACKEND.replace(/^http/, "ws") + "/api/chat/loop";
+  const ws = new WebSocket(wsUrl);
+  ws.onopen = () => ws.send(JSON.stringify(payload));
+  ws.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data) as LoopStreamEvent);
+    } catch {
+      // ignore
+    }
+  };
+  ws.onclose = () => onClose?.();
+  ws.onerror = () => {}; // `close` always follows — see openChatStream
   return ws;
 }
 

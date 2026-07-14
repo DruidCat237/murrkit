@@ -128,6 +128,15 @@ export type ChatStreamEvent =
   | { kind: "aborted"; reason: string }
   | { kind: "error"; error: string };
 
+/** Events of the WS /api/chat/loop work-loop stream: the normal chat events
+ *  (one inner captain turn per round) plus loop control events. `final` here
+ *  ends ONE ROUND, not the stream — only `loop_done` is terminal. */
+export type LoopStreamEvent =
+  | ChatStreamEvent
+  | { kind: "warning"; level: string; text: string }
+  | { kind: "loop_iter"; i: number; status: "continue" | "done" | "blocked" | "missing"; detail: string; cost_so_far: number }
+  | { kind: "loop_done"; reason: "done" | "blocked" | "caps" | "stuck"; detail: string; iters: number; cost: number };
+
 // ---- Settings / Config -------------------------------------------------------
 
 export interface ConfigField {

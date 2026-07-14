@@ -50,6 +50,7 @@ import {
   loadChatHistory,
   openChatStream,
   openFileInEditor,
+  openLoopStream,
   uploadChatAttachment,
 } from "@/lib/api";
 import type {
@@ -448,6 +449,14 @@ export default function ChatPanel({
     // aborted a not-yet-created task, then the stream opened anyway, unabortable.
     await backendReady;
 
+    // WORK LOOP: "/loop [--iters N] [--budget X] <zadanie>" runs the captain
+    // in the autonomous ralph-style loop (WS /api/chat/loop) instead of one
+    // chat turn. Attachments are not part of the loop protocol.
+    if (txt.startsWith("/loop")) {
+      startLoop(txt);
+      return;
+    }
+
     // 1. Upload all attachments first
     let uploaded: ChatAttachment[] = [];
     if (files.length > 0) {
@@ -603,6 +612,142 @@ export default function ChatPanel({
         setActiveTaskId(null);
         wsRef.current = null;
       }
+    );
+    wsRef.current = ws;
+  }
+
+  // WORK LOOP — one agent bubble accumulates ALL rounds; `final` ends a round
+  // (accumulate cost, keep streaming), only `loop_done` finalizes the turn.
+  // Stop works unchanged: the loop registers the same task_id in `_tasks`.
+  function startLoop(raw: string) {
+    sendingRef.current = false;
+    // Parse: /loop [--iters N] [--budget X] <task prompt>
+    let rest = raw.slice("/loop".length).trim();
+    let maxIters: number | undefined;
+    let budgetUsd: number | undefined;
+    for (;;) {
+      const m = rest.match(/^--(iters|budget)\s+(\d+(?:\.\d+)?)\s+/);
+      if (!m) break;
+      if (m[1] === "iters") maxIters = parseInt(m[2], 10);
+      else budgetUsd = parseFloat(m[2]);
+      rest = rest.slice(m[0].length);
+    }
+    const prompt = rest.trim();
+    if (!prompt) {
+      setMsgs((m) => [...m, {
+        role: "agent",
+        text: "Użycie: `/loop [--iters N] [--budget X] <zadanie>` — autonomiczna pętla robocza kapitana. Kapitan kończy każdą rundę markerem LOOP_CONTINUE / LOOP_DONE / LOOP_BLOCKED; log rund w `.omc/state/<projekt>/loop_log.md`.",
+      }]);
+      return;
+    }
+
+    stickToBottomRef.current = true;
+    setShowJump(false);
+    setMsgs((m) => [...m, { role: "user", text: raw, model }]);
+    setInput("");
+    liveBufferRef.current = [];
+    partialTextRef.current = "";
+    setAssetEvents([]);
+    setMsgs((m) => [...m, { role: "agent", text: "", model, liveEvents: [], cost: 0 }]);
+
+    const taskId = `loop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setActiveTaskId(taskId);
+    setBusy(true);
+
+    let costAccum = 0;
+    const appendText = (chunk: string) => {
+      partialTextRef.current += chunk;
+      setMsgs((prev) => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        if (last && last.role === "agent") {
+          copy[copy.length - 1] = { ...last, text: partialTextRef.current };
+        }
+        return copy;
+      });
+    };
+
+    const ws = openLoopStream(
+      {
+        task_id: taskId,
+        project_name: projectName,
+        prompt,
+        max_iters: maxIters,
+        budget_usd: budgetUsd,
+      },
+      (evt) => {
+        lastEventTimeRef.current = Date.now();
+        if (evt.kind === "token") {
+          appendText(evt.text);
+        } else if (
+          evt.kind === "tool_use" ||
+          evt.kind === "tool_result" ||
+          evt.kind === "thought" ||
+          evt.kind === "system"
+        ) {
+          liveBufferRef.current.push(evt);
+          setMsgs((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last && last.role === "agent") {
+              copy[copy.length - 1] = { ...last, liveEvents: [...liveBufferRef.current] };
+            }
+            return copy;
+          });
+          if (evt.kind === "tool_use") {
+            const ae = classifyAssetEvent(evt);
+            if (ae) setAssetEvents((prev) => upsertAssetEvent(prev, ae));
+          } else if (evt.kind === "tool_result") {
+            setAssetEvents((prev) =>
+              prev.map((a) =>
+                a.toolId === evt.id
+                  ? { ...a, status: evt.ok ? "done" : "failed", resultSummary: evt.result_summary }
+                  : a,
+              ),
+            );
+          }
+        } else if (evt.kind === "final") {
+          // End of ONE ROUND — accumulate cost, do NOT close/finalize.
+          costAccum += evt.cost_usd ?? 0;
+          setMsgs((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last && last.role === "agent") {
+              copy[copy.length - 1] = { ...last, cost: costAccum };
+            }
+            return copy;
+          });
+        } else if (evt.kind === "loop_iter") {
+          appendText(
+            `\n\n— runda ${evt.i + 1}: ${evt.status.toUpperCase()}` +
+            `${evt.detail ? ` — ${evt.detail}` : ""} —\n\n`,
+          );
+        } else if (evt.kind === "warning") {
+          appendText(`\n\n⚠ ${evt.text}\n`);
+        } else if (evt.kind === "loop_done") {
+          appendText(
+            `\n\n■ LOOP ${evt.reason.toUpperCase()} po ${evt.iters} rundach ` +
+            `($${evt.cost.toFixed(2)})${evt.detail ? ` — ${evt.detail}` : ""}`,
+          );
+          setBusy(false);
+          setActiveTaskId(null);
+          if (wsRef.current) {
+            try { wsRef.current.close(); } catch { /* ignore */ }
+            wsRef.current = null;
+          }
+        } else if (evt.kind === "aborted") {
+          appendText("\n\n[Aborted by user]");
+        } else if (evt.kind === "error") {
+          appendText(`\n\n[Error: ${evt.error}]`);
+          setBusy(false);
+          setActiveTaskId(null);
+        }
+      },
+      () => {
+        setBusy(false);
+        setActiveTaskId(null);
+        wsRef.current = null;
+      },
     );
     wsRef.current = ws;
   }
