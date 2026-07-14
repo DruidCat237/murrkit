@@ -26,6 +26,7 @@ import { useToasts } from "../Toaster";
 import { useLayout } from "@/store/layout";
 
 const NEW_MAP_TEMPLATE = (id: string): string => `id: ${id}
+# projection: isometric   # odkomentuj dla prawdziwego iso (romby 2:1)
 tileSize: 32
 width: 40
 height: 30
@@ -216,12 +217,19 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
     try {
       // Style anchor: the first ALREADY-generated biome's sheet (if any).
       const anchor = detail?.tilesets.find((t) => t.published_disk_path)?.published_disk_path ?? undefined;
+      // Projection from the SAVED spec (staging is blocked while dirty) — an
+      // isometric map gets 2:1 diamond-cell sheets, orthogonal gets squares.
+      const projection =
+        (detail?.spec as { projection?: string } | null)?.projection === "isometric"
+          ? ("isometric" as const)
+          : ("orthogonal" as const);
       const res = await planBiomeTilesets(
         projectName,
         targets.map((t) => ({
           biome: t.biome,
           prompt: promptFor(t.biome),
           baseImagePath: t.published_disk_path ? undefined : anchor,
+          projection,
         })),
       );
       toast.success(
@@ -427,7 +435,17 @@ export default function MapStudioPanel({ projectName }: { projectName: string })
                 <div className="w-72 shrink-0 flex flex-col overflow-y-auto">
                   <div className="px-3 py-2 border-t border-line">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-semibold">Biome tilesets</span>
+                      <span className="text-xs font-semibold">
+                        Biome tilesets
+                        {(detail?.spec as { projection?: string } | null)?.projection === "isometric" && (
+                          <span
+                            className="ml-1.5 rounded bg-sky-500/20 px-1 py-0.5 text-[10px] font-normal text-sky-300"
+                            title="Mapa izometryczna: kafle to romby 2:1 (szer. 2×tileSize), generowane sheety dostają geometrię diamentu automatycznie. Painter edytuje siatkę logiczną — podgląd iso w grze (?level=…)."
+                          >
+                            iso 2:1
+                          </span>
+                        )}
+                      </span>
                       <button
                         className="btn text-xs px-2 py-1 inline-flex items-center gap-1 disabled:opacity-50"
                         disabled={staging !== null || missing.length === 0}

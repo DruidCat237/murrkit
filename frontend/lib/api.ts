@@ -403,7 +403,13 @@ export async function aiPaintMap(
  */
 export async function planBiomeTilesets(
   project: string,
-  rows: Array<{ biome: string; prompt: string; baseImagePath?: string }>,
+  rows: Array<{
+    biome: string;
+    prompt: string;
+    baseImagePath?: string;
+    /** Map's `projection:` — "isometric" makes the sheet 2:1 diamond cells. */
+    projection?: "orthogonal" | "isometric";
+  }>,
 ): Promise<{ task_ids: string[]; count: number; total_cost_usd: number }> {
   return post(`/api/gen-queue/plan`, {
     project,
@@ -416,6 +422,7 @@ export async function planBiomeTilesets(
       resolution: "2K",
       aspect_ratio: "1:1",
       base_image_path: r.baseImagePath ?? null,
+      extra: { projection: r.projection ?? "orthogonal" },
     })),
   });
 }

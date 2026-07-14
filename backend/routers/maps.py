@@ -57,6 +57,9 @@ def _validate_spec(spec: Any) -> list[str]:
         errs.append(f"{w}×{h} exceeds 512×512 tile cap")
     if not isinstance(ts, int) or ts < 8:
         errs.append("tileSize must be an integer ≥ 8 px")
+    proj = spec.get("projection")
+    if proj is not None and proj not in ("orthogonal", "isometric"):
+        errs.append('projection must be "orthogonal" or "isometric"')
     tilesets = spec.get("tilesets")
     if not isinstance(tilesets, list) or not tilesets:
         errs.append("needs at least one entry in `tilesets`")

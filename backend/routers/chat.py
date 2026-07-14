@@ -3721,6 +3721,13 @@ def _build_captain_prompt(
         "playtest/screenshot (`?level=<id>`), zanim jakikolwiek tileset "
         "powstanie. Avatar rusza się po `spawn` (WASD/strzałki), biomy z "
         "`walkable: false` kolidują — asserts `/api/phaser/drive` działają.",
+        "  - PRAWDZIWE ISO: `projection: isometric` w map.yaml renderuje tę "
+        "samą siatkę logiczną jako romby 2:1 (`tileSize` = WYSOKOŚĆ rombu, "
+        "szerokość 2×). Regiony/paint/role autotile bez zmian; placeholdery, "
+        "kolizje avatara (ręczne, nie arcade) i `/drive` działają; w rows "
+        "planu dodaj extra={'projection':'isometric'} (panel robi to sam), "
+        "a sheet dostaje geometrię diamentu deterministycznie. Referencja: "
+        "`maps/iso_meadow.map.yaml`.",
         "  - Tileset per biom przez kolejkę: POST /api/gen-queue/plan z "
         "rows=[{name:'<biome>', asset_type:'biome_tileset', prompt:'<theme>'}] "
         "(accept-gate jak zawsze). Worker generuje arkusz 4×4 (9-slice "

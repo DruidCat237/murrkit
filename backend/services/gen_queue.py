@@ -461,12 +461,14 @@ async def add_planned(
     aspect_ratio: str,
     cost_cents: int,
     base_image_path: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Add a 'planned' row to the queue. No upstream call until accepted.
 
     Pass `base_image_path` (absolute disk path) when the row should run
     through gpt-image-2-edit using that file as the reference image —
-    keeps character poses consistent across iterations.
+    keeps character poses consistent across iterations. `extra` carries
+    per-asset-type knobs into dispatch (reserved keys `name`/`planned` win).
     """
     task_id = uuid.uuid4().hex[:12]
     task = QueueTask(
@@ -483,7 +485,7 @@ async def add_planned(
         planned_resolution=resolution,
         planned_aspect_ratio=aspect_ratio,
         base_image_path=base_image_path,
-        extra={"name": name, "planned": True},
+        extra={**(extra or {}), "name": name, "planned": True},
     )
     _state.tasks[task_id] = task
     _state.order.append(task_id)

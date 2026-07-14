@@ -1,0 +1,62 @@
+# iso_meadow.map.yaml — Map Studio TRUE-ISO reference map (2:1 diamonds).
+#
+# Open with:  http://localhost:5173/?level=iso_meadow
+#
+# Same logical content as meadow.map.yaml (same seed → same biome grid), but
+# `projection: isometric`: tileSize 32 renders 64×32 rhombi, the Tiled JSON is
+# emitted with orientation "isometric" and every biome sheet must be a
+# (2·tileSize)×tileSize-per-cell 4×4 sheet (placeholders + the generation
+# pipeline handle this automatically; mismatched sheets fall back to
+# placeholders with a console warning).
+#
+# Spawn note: sits NW of the lake so walking screen-down (S key) hits water
+# in under a second — the Playwright iso smoke test asserts that block.
+
+id: iso_meadow
+projection: isometric
+tileSize: 32
+width: 48
+height: 36
+seed: 20260712
+defaultBiome: grass
+
+tilesets:
+  - biome: grass
+    color: "#5da548"
+    decorDensity: 0.06
+  - biome: forest
+    color: "#2e6b34"
+    decorDensity: 0.18
+  - biome: sand
+    color: "#d8c07a"
+  - biome: water
+    color: "#3a76c4"
+    walkable: false           # the avatar collides with the lake
+
+biomes:
+  - { biome: grass,  seed: [10, 24] }
+  - { biome: grass,  seed: [38, 8] }
+  - { biome: forest, seed: [40, 28] }
+  - { biome: forest, seed: [8, 6] }
+  - { biome: sand,  rect: [0, 16, 48, 4] }     # east-west road
+  - { biome: sand,  rect: [22, 0, 4, 36] }     # north-south road
+  - { biome: water, rect: [30, 22, 12, 9] }    # lake
+  - { biome: water, rect: [28, 24, 2, 5] }     # lake's ragged west bay
+
+paint:
+  legend: { g: grass, f: forest, s: sand, w: water }
+  rows:
+    - "................"
+    - ".ssss..........."
+    - ".sffs..........."
+    - ".sffs..........."
+    - ".ssss..........."
+
+objects:
+  - { name: hero_start, type: spawn, x: 26.5, y: 20 }
+  - { name: lake_marker, type: marker, x: 36, y: 26 }
+
+notes: >
+  True-isometric twin of the meadow reference map: identical logical grid,
+  rendered as 2:1 diamonds. Walk with WASD (screen axes); the lake blocks
+  movement via the manual iso collision path in TilemapScene.

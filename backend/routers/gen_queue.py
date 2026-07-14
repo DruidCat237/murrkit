@@ -228,6 +228,9 @@ class PlanRow(BaseModel):
     # gpt-image-2-edit. Keeps the generated sprite visually consistent
     # with an existing character atlas — see task #105 base-character rule.
     base_image_path: str | None = None
+    # Per-asset-type knobs carried through to the dispatch worker (e.g.
+    # biome_tileset: {"projection": "isometric"} makes the sheet 2:1 cells).
+    extra: dict[str, Any] = {}
 
 
 class PlanRequest(BaseModel):
@@ -287,6 +290,7 @@ async def post_plan(req: PlanRequest) -> dict[str, Any]:
             aspect_ratio=row.aspect_ratio,
             cost_cents=cents,
             base_image_path=row.base_image_path,
+            extra=row.extra,
         )
         task_ids.append(tid)
     return {
@@ -690,7 +694,11 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
         # `name` doubles as the biome id (matches map.yaml `tilesets[].biome`);
         # base_image_path (optional) anchors the art style to an earlier
         # biome's sheet via edit-mode so a map's tilesets don't drift apart.
+        # `extra.projection` ("isometric") switches the sheet to 2:1 diamond
+        # cells — the panel sends it from the map's `projection:` field.
         biome = str((t.extra or {}).get("biome") or name)
+        raw_projection = str((t.extra or {}).get("projection") or "orthogonal")
+        projection = raw_projection if raw_projection in ("orthogonal", "isometric") else "orthogonal"
 
         async def biome_worker(task: gq.QueueTask, handle: gq.QueueTaskHandle) -> None:
             import asyncio as _asyncio
@@ -706,6 +714,7 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             result = await generate_biome_tileset(
                 task.prompt,
                 biome,
+                projection=projection,
                 base_image_path=task.base_image_path,
                 project=task.project,
             )
@@ -744,7 +753,7 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             project=t.project,
             eta_seconds=90.0,
             worker=biome_worker,
-            extra={"name": name, "biome": biome},
+            extra={"name": name, "biome": biome, "projection": projection},
             base_image_path=t.base_image_path,
         )
 

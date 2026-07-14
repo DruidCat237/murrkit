@@ -16,7 +16,7 @@
 import Phaser from "phaser";
 import {
   MAP_TILESET_COLUMNS, MAP_TILESET_ROWS, MAP_TILESET_TILECOUNT, TILE,
-  biomeColor, validateMapSpec,
+  biomeColor, tileDims, validateMapSpec,
   type BiomeTilesetSpec, type MapSpec,
 } from "@/builders/mapSpec";
 
@@ -156,6 +156,10 @@ export function compileMap(spec: MapSpec): CompiledMap {
   }
 
   // ---- objects -------------------------------------------------------------
+  // Object pixel coords are tile coords × tileSize in BOTH projections (for
+  // isometric this is Tiled's own convention: iso object space uses tileheight
+  // as the unit). Consumers that need screen coords go through
+  // `map.tileToWorldXY` — see TilemapScene's spawn placement.
   let spawn: { x: number; y: number } | null = null;
   const tiledObjects = (spec.objects ?? []).map((o, idx) => {
     if ((o.type ?? "marker") === "spawn" && spawn === null) spawn = { x: o.x, y: o.y };
@@ -168,19 +172,20 @@ export function compileMap(spec: MapSpec): CompiledMap {
 
   // ---- Tiled JSON ------------------------------------------------------------
   const textureKeys = spec.tilesets.map(textureKeyFor);
-  const sheetPx = MAP_TILESET_COLUMNS * T;
+  const projection = spec.projection ?? "orthogonal";
+  const { tileW, tileH } = tileDims(spec);
   const tiled: Record<string, unknown> = {
     type: "map", version: "1.10", tiledversion: "1.10.2",
-    orientation: "orthogonal", renderorder: "right-down", infinite: false,
-    width: W, height: H, tilewidth: T, tileheight: T,
+    orientation: projection, renderorder: "right-down", infinite: false,
+    width: W, height: H, tilewidth: tileW, tileheight: tileH,
     nextlayerid: 4, nextobjectid: tiledObjects.length + 1,
     tilesets: spec.tilesets.map((t, i) => ({
       firstgid: firstGids[i],
       name: textureKeys[i],
-      tilewidth: T, tileheight: T,
+      tilewidth: tileW, tileheight: tileH,
       tilecount: MAP_TILESET_TILECOUNT, columns: MAP_TILESET_COLUMNS,
       image: t.image ?? `__placeholder__/${t.biome}.png`,
-      imagewidth: sheetPx, imageheight: MAP_TILESET_ROWS * T,
+      imagewidth: MAP_TILESET_COLUMNS * tileW, imageheight: MAP_TILESET_ROWS * tileH,
       margin: 0, spacing: 0,
     })),
     layers: [
@@ -223,18 +228,33 @@ export interface BuiltMap {
  */
 export function buildTilemap(scene: Phaser.Scene, compiled: CompiledMap): BuiltMap {
   const { spec, tiled, textureKeys, collisionGids } = compiled;
+  const { tileW, tileH } = tileDims(spec);
+  const sheetW = MAP_TILESET_COLUMNS * tileW, sheetH = MAP_TILESET_ROWS * tileH;
 
   const placeholderBiomes: string[] = [];
   spec.tilesets.forEach((t, i) => {
+    // A loaded sheet whose pixel size doesn't match the projection's cell
+    // size would silently garble every tile UV (e.g. an orthogonal 4T×4T
+    // sheet on an isometric map that expects 8T×4T). Drop it LOUDLY and
+    // fall back to the placeholder — same philosophy as the 404 path.
+    if (scene.textures.exists(textureKeys[i])) {
+      const src = scene.textures.get(textureKeys[i]).getSourceImage();
+      if (src.width !== sheetW || src.height !== sheetH) {
+        console.warn(
+          `map '${spec.id}': tileset '${textureKeys[i]}' is ${src.width}×${src.height}, ` +
+          `expected ${sheetW}×${sheetH} for ${spec.projection ?? "orthogonal"} — using placeholder`,
+        );
+        scene.textures.remove(textureKeys[i]);
+      }
+    }
     // NOTE: a texture created here persists in the TextureManager for the
     // Game's lifetime. Today that's safe — swapping placeholder→real art
     // always goes through a Vite full page reload (yaml edits invalidate the
     // eager raw glob; no import.meta.hot handler exists). IF a live editor
     // ever calls scene.restart() with a changed tileSize or freshly-published
-    // sheet, this check must also compare the existing texture's dimensions
-    // and destroy/recreate on mismatch.
+    // sheet, the dimension check above already destroys stale mismatches.
     if (!scene.textures.exists(textureKeys[i])) {
-      makePlaceholderTexture(scene, textureKeys[i], t, spec.tileSize);
+      makePlaceholderTexture(scene, textureKeys[i], t, spec);
       placeholderBiomes.push(t.biome);
     }
   });
@@ -249,6 +269,12 @@ export function buildTilemap(scene: Phaser.Scene, compiled: CompiledMap): BuiltM
   );
   const groundLayer = map.createLayer("ground", tilesets, 0, 0)!;
   const decorLayer = map.createLayer("decor", tilesets, 0, 0);
+  if (spec.projection === "isometric") {
+    // Iso culling treats tiles as their bounding boxes; a small padding stops
+    // edge diamonds popping in/out while the camera scrolls.
+    groundLayer.setCullPadding(2, 2);
+    decorLayer?.setCullPadding(2, 2);
+  }
   if (collisionGids.length > 0) groundLayer.setCollision(collisionGids);
 
   return { map, groundLayer, decorLayer, compiled, placeholderBiomes };
@@ -259,12 +285,20 @@ export function buildTilemap(scene: Phaser.Scene, compiled: CompiledMap): BuiltM
  * (variants jittered), edge/corner cells with a darker band on the sides that
  * transition, decor cells as small alpha dots. Layout mirrors the real
  * generated sheets, so transitions are previewable before any art exists.
+ *
+ * Orthogonal cells are solid squares; isometric cells are 2:1 diamonds on
+ * alpha, with the transition bands drawn along the diamond edge that faces
+ * the role's logical side (N→top-right, E→bottom-right, S→bottom-left,
+ * W→top-left — see mapSpec.ts header).
  */
 function makePlaceholderTexture(
-  scene: Phaser.Scene, key: string, t: BiomeTilesetSpec, tileSize: number,
+  scene: Phaser.Scene, key: string, t: BiomeTilesetSpec,
+  spec: Pick<MapSpec, "tileSize" | "projection">,
 ): void {
   const cols = MAP_TILESET_COLUMNS, rows = MAP_TILESET_ROWS;
-  const tex = scene.textures.createCanvas(key, cols * tileSize, rows * tileSize);
+  const iso = spec.projection === "isometric";
+  const { tileW, tileH } = tileDims(spec);
+  const tex = scene.textures.createCanvas(key, cols * tileW, rows * tileH);
   if (!tex) return; // key collision — texture already exists
   const ctx = tex.getContext();
   const base = biomeColor(t);
@@ -278,28 +312,77 @@ function makePlaceholderTexture(
     [TILE.L]: ["w"], [TILE.C]: [], [TILE.R]: ["e"],
     [TILE.BL]: ["s", "w"], [TILE.B]: ["s"], [TILE.BR]: ["s", "e"],
   };
-  const bw = Math.max(2, Math.floor(tileSize / 6)); // band width
+  const bw = Math.max(2, Math.floor(tileH / 6)); // band width
+
+  // Diamond vertices of a cell at (cx, cy): Top, Right, Bottom, Left.
+  const diamond = (cx: number, cy: number): [number, number][] => [
+    [cx + tileW / 2, cy], [cx + tileW, cy + tileH / 2],
+    [cx + tileW / 2, cy + tileH], [cx, cy + tileH / 2],
+  ];
+  const tracePoly = (pts: [number, number][]): void => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+    ctx.closePath();
+  };
 
   for (let idx = 0; idx < MAP_TILESET_TILECOUNT; idx++) {
-    const cx = (idx % cols) * tileSize, cy = Math.floor(idx / cols) * tileSize;
+    const cx = (idx % cols) * tileW, cy = Math.floor(idx / cols) * tileH;
     if (idx >= TILE.D0) {
       // decor: transparent cell with a small dot so scattering is visible
-      ctx.clearRect(cx, cy, tileSize, tileSize);
+      ctx.clearRect(cx, cy, tileW, tileH);
       ctx.fillStyle = css(0.7);
       ctx.beginPath();
-      ctx.arc(cx + tileSize / 2, cy + tileSize / 2, tileSize / (5 + (idx - TILE.D0)), 0, Math.PI * 2);
+      if (iso) {
+        ctx.ellipse(
+          cx + tileW / 2, cy + tileH / 2,
+          tileH / (5 + (idx - TILE.D0)), tileH / (2 * (5 + (idx - TILE.D0))),
+          0, 0, Math.PI * 2,
+        );
+      } else {
+        ctx.arc(cx + tileW / 2, cy + tileH / 2, tileH / (5 + (idx - TILE.D0)), 0, Math.PI * 2);
+      }
       ctx.fill();
       continue;
     }
     const jitter = idx >= TILE.V1 ? 1 + 0.06 * (idx - TILE.V1 + 1) : 1;
+    if (!iso) {
+      ctx.fillStyle = css(jitter);
+      ctx.fillRect(cx, cy, tileW, tileH);
+      for (const side of bands[idx] ?? []) {
+        ctx.fillStyle = css(0.55);
+        if (side === "n") ctx.fillRect(cx, cy, tileW, bw);
+        if (side === "s") ctx.fillRect(cx, cy + tileH - bw, tileW, bw);
+        if (side === "w") ctx.fillRect(cx, cy, bw, tileH);
+        if (side === "e") ctx.fillRect(cx + tileW - bw, cy, bw, tileH);
+      }
+      continue;
+    }
+    // Isometric: alpha corners + filled diamond, bands stroked along the
+    // diamond edge facing the role's logical side, clipped to the diamond.
+    ctx.clearRect(cx, cy, tileW, tileH);
+    const [pT, pR, pB, pL] = diamond(cx, cy);
+    tracePoly([pT, pR, pB, pL]);
     ctx.fillStyle = css(jitter);
-    ctx.fillRect(cx, cy, tileSize, tileSize);
-    for (const side of bands[idx] ?? []) {
-      ctx.fillStyle = css(0.55);
-      if (side === "n") ctx.fillRect(cx, cy, tileSize, bw);
-      if (side === "s") ctx.fillRect(cx, cy + tileSize - bw, tileSize, bw);
-      if (side === "w") ctx.fillRect(cx, cy, bw, tileSize);
-      if (side === "e") ctx.fillRect(cx + tileSize - bw, cy, bw, tileSize);
+    ctx.fill();
+    const sides = bands[idx] ?? [];
+    if (sides.length > 0) {
+      ctx.save();
+      tracePoly([pT, pR, pB, pL]);
+      ctx.clip();
+      ctx.strokeStyle = css(0.55);
+      ctx.lineWidth = bw * 2;
+      const edge: Record<"n" | "e" | "s" | "w", [[number, number], [number, number]]> = {
+        n: [pT, pR], e: [pR, pB], s: [pB, pL], w: [pL, pT],
+      };
+      for (const side of sides) {
+        const [a, b] = edge[side];
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   }
   tex.refresh();

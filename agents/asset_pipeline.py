@@ -149,15 +149,79 @@ def _biome_tileset_prompt(description: str, biome: str) -> str:
     )
 
 
+def _biome_tileset_prompt_iso(description: str, biome: str) -> str:
+    """Prompt for the TRUE-ISOMETRIC variant of the 16-tile autotile sheet.
+
+    Cells are generated SQUARE (a 4×4 grid) with the terrain drawn as one
+    2:1-looking rhombus per cell whose corners touch the cell's four edge
+    midpoints. Post-processing squashes terrain cells to half height (yielding
+    exact 2:1 diamonds), band-crops the decor row (props must NOT be squashed)
+    and applies a hard diamond alpha mask, so the model only has to get the
+    texture right — the geometry is enforced deterministically.
+
+    Role sides follow the iso projection (see mapSpec.ts): the logical N/E/S/W
+    transition sides map to the diamond's top-right / bottom-right /
+    bottom-left / top-left edges.
+    """
+    return (
+        f"2D ISOMETRIC game terrain tileset for a '{biome}' biome: {description}. "
+        f"STRICT LAYOUT — a square sheet divided into a 4x4 grid of 16 equal "
+        f"square cells, no gaps, no borders, no labels. "
+        f"Every cell in rows 1-3 contains exactly ONE isometric diamond "
+        f"(rhombus) of ground terrain, seen from a classic 2:1 isometric "
+        f"angle: the diamond's four corners touch the midpoints of the cell's "
+        f"four edges, and everything outside the diamond is FLAT UNIFORM "
+        f"NEUTRAL GREY. "
+        f"Rows 1-3, first 3 columns form a seamless 3x3 autotile blob of "
+        f"diamonds: the middle diamond (row 2 col 2) is the pure interior "
+        f"terrain; the 8 diamonds around it are that same terrain fading out "
+        f"toward the matching edge(s) of the diamond — top row fades along "
+        f"the diamond's two upper edges, left column along the two left "
+        f"edges, corners along both adjacent edges. "
+        f"Column 4 of rows 1-3: three interior VARIANT diamonds — same "
+        f"terrain with subtle detail differences. "
+        f"Row 4: four SEPARATE small isometric decor props that belong to "
+        f"this biome (plant, stone, flower, debris...), each centred in its "
+        f"cell on the same FLAT UNIFORM NEUTRAL GREY background, upright, at "
+        f"most HALF the cell tall, not touching cell edges. "
+        f"Consistent palette and pixel-art style across all 16 cells, evenly "
+        f"lit, no characters, no text, no watermark."
+    )
+
+
 def _alpha_pct(png_path: Path) -> float:
     """% pixels with alpha > 0 (validation that rembg kept the decor prop)."""
     from agents.sprite_pipeline import _alpha_visible_pct
     return _alpha_visible_pct(png_path)
 
 
-def _mask_decor_tiles(sheet_path: Path, tile_paths: list[Path], biome: str, tile_size: int) -> bool:
+def _diamond_cell_mask(cell_w: int, cell_h: int) -> Any:
+    """L-mode alpha mask of a full-cell 2:1 diamond, antialiased via 4×
+    supersampling. Applied to the 12 terrain cells of an isometric sheet so
+    adjacent diamonds meet on exact geometry regardless of generation slop."""
+    from PIL import Image, ImageDraw
+
+    ss = 4
+    m = Image.new("L", (cell_w * ss, cell_h * ss), 0)
+    d = ImageDraw.Draw(m)
+    d.polygon(
+        [
+            (cell_w * ss // 2, 0), (cell_w * ss - 1, cell_h * ss // 2),
+            (cell_w * ss // 2, cell_h * ss - 1), (0, cell_h * ss // 2),
+        ],
+        fill=255,
+    )
+    return m.resize((cell_w, cell_h), Image.LANCZOS)
+
+
+def _mask_decor_tiles(
+    sheet_path: Path, tile_paths: list[Path], biome: str, tile_w: int, tile_h: int,
+) -> bool:
     """SYNC worker: rembg the four decor tiles, validate each mask, paste the
     alpha versions back into the sheet. Returns True if any cell gained alpha.
+
+    Cell geometry is (tile_w × tile_h): square for orthogonal sheets, 2:1 for
+    isometric ones.
 
     Runs via asyncio.to_thread — up to 8 rembg inferences (4 tiles × 2 model
     fallbacks) take 15-40s, which would freeze heartbeats/WebSockets if run on
@@ -195,10 +259,10 @@ def _mask_decor_tiles(sheet_path: Path, tile_paths: list[Path], biome: str, tile
             if ok:
                 shutil.move(str(masked), str(tile_path))  # tiles/ gets the alpha version
                 with Image.open(tile_path) as tile_img:
-                    cx = (idx % BIOME_TILESET_GRID) * tile_size
-                    cy = (idx // BIOME_TILESET_GRID) * tile_size
+                    cx = (idx % BIOME_TILESET_GRID) * tile_w
+                    cy = (idx // BIOME_TILESET_GRID) * tile_h
                     # Clear the cell, then paste the masked prop back in.
-                    sheet_img.paste((0, 0, 0, 0), (cx, cy, cx + tile_size, cy + tile_size))
+                    sheet_img.paste((0, 0, 0, 0), (cx, cy, cx + tile_w, cy + tile_h))
                     sheet_img.paste(tile_img.convert("RGBA"), (cx, cy))
                 changed = True
             else:
@@ -213,6 +277,7 @@ async def generate_biome_tileset(
     biome: str = "terrain",
     *,
     tile_size: int = 64,
+    projection: str = "orthogonal",
     base_image_path: Path | str | None = None,
     transparent_decor: bool = True,
     output_dir: Path | None = None,
@@ -223,18 +288,28 @@ async def generate_biome_tileset(
 
     Pipeline: prompt → GPT-Image-2 (edit-mode when `base_image_path` anchors
     the style to an earlier biome, so a map's tilesets stay one art style) →
-    normalize to exactly 4×4 · `tile_size` px → slice into tiles/ + roles →
-    rembg ONLY the four decor cells (terrain must stay opaque) and paste the
-    alpha versions back into the sheet → write `tileset.json` → publish the
-    sheet to the stable game path
+    normalize → slice into tiles/ + roles → rembg ONLY the four decor cells
+    (terrain must stay opaque) and paste the alpha versions back into the
+    sheet → write `tileset.json` → publish the sheet to the stable game path
     ``public/assets/tilesets/<project>/<biome>/sheet.png`` that
     `maps/*.map.yaml` references (regeneration overwrites in place — the map
     YAML never has to change).
 
+    Projections (mirrors mapSpec.ts `tileDims`):
+      - "orthogonal": cells are tile_size×tile_size squares, sheet is
+        4·tile_size square (unchanged historical behaviour).
+      - "isometric":  cells are (2·tile_size)×tile_size — 2:1 diamonds. The
+        model paints square cells with a diamond touching the edge midpoints;
+        post-processing squashes terrain cells to half height, band-crops the
+        decor row (props must stay upright) and applies a hard antialiased
+        diamond alpha mask, so the published sheet has exact 2:1 geometry.
+
     Args:
         description:       Theme, e.g. "lush spring meadow, soft pixel art".
         biome:             Biome id used in map.yaml `tilesets[].biome`.
-        tile_size:         Output tile edge in px (sheet = 4×tile_size square).
+        tile_size:         Tile edge in px. For isometric this is the diamond
+                           HEIGHT (matches map.yaml `tileSize`).
+        projection:        "orthogonal" (default) or "isometric".
         base_image_path:   Existing sheet/atlas to anchor style via edit-mode.
         transparent_decor: rembg the decor row to alpha (default True).
         output_dir:        Library output dir override.
@@ -253,6 +328,13 @@ async def generate_biome_tileset(
     )
     from core.config import PROJECT_ROOT
 
+    if projection not in ("orthogonal", "isometric"):
+        raise ValueError(
+            f"projection must be 'orthogonal' or 'isometric', got {projection!r}"
+        )
+    iso = projection == "isometric"
+    tile_w, tile_h = (tile_size * 2, tile_size) if iso else (tile_size, tile_size)
+
     biome_slug = _slugify(biome, 20) or "biome"
     slug = f"{biome_slug}_{_slugify(description, 20) or 'tiles'}"
 
@@ -260,7 +342,10 @@ async def generate_biome_tileset(
         output_dir = _default_output_dir(subfolder_for_role("biome_tileset"), project) / slug
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt = _biome_tileset_prompt(description, biome)
+    prompt = (
+        _biome_tileset_prompt_iso(description, biome) if iso
+        else _biome_tileset_prompt(description, biome)
+    )
     if base_image_path:
         logger.info("biome tileset '{b}': edit-mode from {p}", b=biome, p=base_image_path)
         task_id = submit_edit_from_path(
@@ -278,19 +363,53 @@ async def generate_biome_tileset(
         async with session.get(image_url) as resp:
             raw_path.write_bytes(await resp.read())
 
-    # Normalize to EXACTLY 4·tile_size square — split_grid and the Phaser
-    # tileset math both assume uniform cells.
-    sheet_px = BIOME_TILESET_GRID * tile_size
     sheet_path = output_dir / "sheet.png"
-    with Image.open(raw_path) as im:
-        im = im.convert("RGBA")
-        if im.size != (sheet_px, sheet_px):
-            logger.info(
-                "biome tileset '{b}': normalizing {w}×{h} → {s}×{s}",
-                b=biome, w=im.size[0], h=im.size[1], s=sheet_px,
+    if iso:
+        # Generation is a square 4×4 grid of square cells (side 2·tile_size).
+        # Reshape into exact 2:1 cells: squash terrain, band-crop decor, then
+        # hard-mask the terrain diamonds — geometry is enforced here, never
+        # trusted from the model.
+        square = tile_w  # painted cell side before reshape
+        gen_px = BIOME_TILESET_GRID * square
+        decor_cells = set(BIOME_TILE_ROLES["decor"])
+        with Image.open(raw_path) as im:
+            im = im.convert("RGBA")
+            if im.size != (gen_px, gen_px):
+                logger.info(
+                    "biome tileset '{b}': normalizing {w}×{h} → {s}×{s}",
+                    b=biome, w=im.size[0], h=im.size[1], s=gen_px,
+                )
+                im = im.resize((gen_px, gen_px), Image.LANCZOS)
+            sheet = Image.new(
+                "RGBA",
+                (BIOME_TILESET_GRID * tile_w, BIOME_TILESET_GRID * tile_h),
+                (0, 0, 0, 0),
             )
-            im = im.resize((sheet_px, sheet_px), Image.LANCZOS)
-        im.save(sheet_path)
+            dmask = _diamond_cell_mask(tile_w, tile_h)
+            for idx in range(BIOME_TILESET_GRID * BIOME_TILESET_GRID):
+                c, r = idx % BIOME_TILESET_GRID, idx // BIOME_TILESET_GRID
+                cell = im.crop((c * square, r * square, (c + 1) * square, (r + 1) * square))
+                if idx in decor_cells:
+                    band_top = (square - tile_h) // 2
+                    cell = cell.crop((0, band_top, square, band_top + tile_h))
+                else:
+                    cell = cell.resize((tile_w, tile_h), Image.LANCZOS)
+                    cell.putalpha(dmask)
+                sheet.paste(cell, (c * tile_w, r * tile_h))
+            sheet.save(sheet_path)
+    else:
+        # Normalize to EXACTLY 4·tile_size square — split_grid and the Phaser
+        # tileset math both assume uniform cells.
+        sheet_px = BIOME_TILESET_GRID * tile_size
+        with Image.open(raw_path) as im:
+            im = im.convert("RGBA")
+            if im.size != (sheet_px, sheet_px):
+                logger.info(
+                    "biome tileset '{b}': normalizing {w}×{h} → {s}×{s}",
+                    b=biome, w=im.size[0], h=im.size[1], s=sheet_px,
+                )
+                im = im.resize((sheet_px, sheet_px), Image.LANCZOS)
+            im.save(sheet_path)
 
     tiles_dir = output_dir / "tiles"
     tiles_dir.mkdir(exist_ok=True)
@@ -309,7 +428,7 @@ async def generate_biome_tileset(
         import asyncio
 
         decor_alpha = await asyncio.to_thread(
-            _mask_decor_tiles, sheet_path, tile_paths, biome, tile_size,
+            _mask_decor_tiles, sheet_path, tile_paths, biome, tile_w, tile_h,
         )
 
     # Stable publish path the game loads from (vite publicDir = murrkit/public).
@@ -323,6 +442,9 @@ async def generate_biome_tileset(
         "biome": biome,
         "theme": description,
         "tile_size": tile_size,
+        "projection": projection,
+        "tile_width": tile_w,
+        "tile_height": tile_h,
         "columns": BIOME_TILESET_GRID,
         "rows": BIOME_TILESET_GRID,
         "sheet": "sheet.png",
@@ -344,6 +466,7 @@ async def generate_biome_tileset(
         metadata={
             "biome": biome,
             "description": description,
+            "projection": projection,
             "roles": BIOME_TILE_ROLES,
             "decor_alpha": decor_alpha,
             "map_yaml_image": meta["map_yaml_image"],

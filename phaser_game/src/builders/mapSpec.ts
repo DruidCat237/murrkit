@@ -17,6 +17,14 @@
  *      6  7  8      BL  B  BR
  *      9 10 11      interior variants (subtle detail breakup)
  *     12 13 14 15   decor overlays (alpha; scattered on the decor layer)
+ *
+ * Projections: the LOGICAL grid (regions, paint, autotile roles, collision)
+ * is identical in both. "orthogonal" (default) renders square T×T cells.
+ * "isometric" renders true-iso 2:1 diamonds: `tileSize` is the diamond
+ * HEIGHT, the diamond width is 2·tileSize, sheets are (2T)×T per cell.
+ * Role sides map to diamond edges via Phaser's iso projection
+ * (worldΔ of tile-N/E/S/W): N→top-right edge, E→bottom-right,
+ * S→bottom-left, W→top-left.
  */
 
 export const MAP_TILESET_COLUMNS = 4;
@@ -85,10 +93,30 @@ export interface PaintSpec {
   rows: string[];
 }
 
+export type MapProjection = "orthogonal" | "isometric";
+
+/** Pixel size of one tile CELL under the spec's projection. Orthogonal:
+ *  tileSize×tileSize squares. Isometric: 2:1 diamonds — width 2·tileSize,
+ *  height tileSize (`tileSize: 32` → classic 64×32 rhombi). Single source of
+ *  the 2:1 rule for the compiler, the scene, placeholders and sheet checks. */
+export function tileDims(
+  spec: Pick<MapSpec, "tileSize" | "projection">,
+): { tileW: number; tileH: number } {
+  return spec.projection === "isometric"
+    ? { tileW: spec.tileSize * 2, tileH: spec.tileSize }
+    : { tileW: spec.tileSize, tileH: spec.tileSize };
+}
+
 export interface MapSpec {
   id: string;
-  /** Tile edge in px (square tiles). */
+  /** Tile edge in px. Orthogonal: the square's side. Isometric: the diamond's
+   *  HEIGHT (its width is always 2×this — see `tileDims`). */
   tileSize: number;
+  /** "orthogonal" (default) = square top-down grid. "isometric" = true-iso
+   *  2:1 diamond grid: same logical grid/regions/paint/roles, but the Tiled
+   *  JSON is emitted with orientation "isometric" and tilesets use
+   *  (2·tileSize)×tileSize cells. */
+  projection?: MapProjection;
   /** Map size in TILES. */
   width: number;
   height: number;
@@ -118,6 +146,9 @@ export function validateMapSpec(spec: unknown): asserts spec is MapSpec {
   }
   if (!Number.isInteger(s.tileSize) || (s.tileSize as number) < 8) {
     throw new Error(`map '${s.id}': tileSize must be an integer ≥ 8 px`);
+  }
+  if (s.projection !== undefined && s.projection !== "orthogonal" && s.projection !== "isometric") {
+    throw new Error(`map '${s.id}': projection must be "orthogonal" or "isometric"`);
   }
   if (!Array.isArray(s.tilesets) || s.tilesets.length === 0) {
     throw new Error(`map '${s.id}': needs at least one entry in \`tilesets\``);
