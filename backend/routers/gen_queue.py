@@ -272,11 +272,16 @@ async def post_plan(req: PlanRequest) -> dict[str, Any]:
                         f"{row.base_image_path}"
                     ),
                 )
+        try:
+            plan_batch = int((row.extra or {}).get("batch") or 1)
+        except (TypeError, ValueError):
+            plan_batch = 1
         cents = _k.estimate_cost_cents(
             workflow_id=row.workflow_id,
             quality=row.quality,
             resolution=row.resolution,
             aspect_ratio=row.aspect_ratio,
+            batch=plan_batch,
         )
         total_cents += cents
         tid = await gq.add_planned(
@@ -755,6 +760,82 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             worker=biome_worker,
             extra={"name": name, "biome": biome, "projection": projection},
             base_image_path=t.base_image_path,
+        )
+
+    if t.asset_type in ("krea2_canon", "krea2-canon"):
+        # Style-locked CANON candidates via Krea 2 Turbo (druidcat API) — the
+        # Cats-vs-Weasels asset track. `name` is the asset stem; extra carries
+        # {batch, lora_preset, lora_strength, aspect_ratio, remove_bg, out_dir}.
+        # out_dir may point OUTSIDE the repo (e.g. D:/CopsNRobbers/cats) — the
+        # asset tree lives with the game, not in projects/Generated.
+        extra_in = dict(t.extra or {})
+        try:
+            canon_batch = max(1, min(int(extra_in.get("batch") or 2), 16))
+        except (TypeError, ValueError):
+            canon_batch = 2
+        canon_lora = str(extra_in.get("lora_preset") or "moebius")
+        try:
+            canon_strength = float(extra_in.get("lora_strength", 0.8))
+        except (TypeError, ValueError):
+            canon_strength = 0.8
+        canon_aspect = str(extra_in.get("aspect_ratio") or "1:1")
+        canon_remove_bg = bool(extra_in.get("remove_bg", True))
+        canon_out_dir = str(extra_in.get("out_dir") or "").strip()
+
+        async def krea2_worker(task: gq.QueueTask, handle: gq.QueueTaskHandle) -> None:
+            from agents.asset_pipeline import generate_krea2_canon
+            from agents.sprite_pipeline import (
+                _default_output_dir as _gen_dir,
+            )
+            from agents.sprite_pipeline import (
+                subfolder_for_role as _role_sub,
+            )
+
+            out_dir = (
+                Path(canon_out_dir) if canon_out_dir
+                else _gen_dir(_role_sub("krea2_canon"), task.project) / name
+            )
+            await handle.progress(
+                5, f"krea2 canon ({name}) — {canon_batch} candidate(s)"
+            )
+            await handle.start_heartbeat(
+                eta_seconds=600.0, interval_s=4.0,
+                text_prefix=f"Krea2 generating {name}",
+            )
+            result = await generate_krea2_canon(
+                task.prompt,
+                name,
+                out_dir=out_dir,
+                batch=canon_batch,
+                lora_preset=canon_lora,
+                lora_strength=canon_strength,
+                aspect_ratio=canon_aspect,
+                remove_bg=canon_remove_bg,
+                project=task.project,
+            )
+            await handle.stop_heartbeat()
+            await handle.progress(95, "saving candidates")
+            await handle.complete(
+                thumbnail_url=_thumb_url(result.files[0]) if result.files else None,
+                cost_usd=result.cost_usd,
+                extra={
+                    "asset_type": result.asset_type,
+                    "files": [str(f) for f in result.files],
+                    "out_dir": str(result.metadata.get("out_dir")),
+                    "lora_preset": canon_lora,
+                    "lora_strength": canon_strength,
+                    "candidates": canon_batch,
+                    "alpha_ok": result.metadata.get("alpha_ok"),
+                },
+            )
+
+        return await gq.enqueue(
+            asset_type="krea2_canon",
+            prompt=t.prompt,
+            project=t.project,
+            eta_seconds=120.0,
+            worker=krea2_worker,
+            extra={**extra_in, "name": name},
         )
 
     if t.asset_type in ("background", "tileset", "ui-element", "particle-fx"):

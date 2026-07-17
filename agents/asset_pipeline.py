@@ -476,6 +476,153 @@ async def generate_biome_tileset(
     )
 
 
+# ---------------------------------------------------------------------------
+# Krea 2 Turbo canons (style-locked character/prop art via the druidcat API)
+# ---------------------------------------------------------------------------
+
+
+def _krea2_generate_one(
+    input_payload: dict[str, Any], out_path: Path,
+) -> tuple[Path, float]:
+    """SYNC worker: submit ONE krea2-turbo job, wait, download the image.
+
+    Returns (saved_path, cost_usd). Runs via asyncio.to_thread — submit +
+    poll + download are blocking `requests` calls that must stay off the
+    event loop (same rule as the rembg worker above).
+    """
+    from tools import gpt_image_2, kitty_api
+
+    job = kitty_api.submit_job_sync(kitty_api.WORKFLOW_KREA2_TURBO, input_payload)
+    job_id = str(job.get("jobId") or "")
+    data = job if (job.get("status") == "completed" and job.get("output")) else (
+        kitty_api.wait_for_completion_sync(job_id, kitty_api.WORKFLOW_KREA2_TURBO)
+    )
+    url = kitty_api.extract_krea2_urls(data)[0]
+    gpt_image_2.download_result(url, out_path)
+
+    # Cost: krea2 reports it on the SUBMIT response in DOLLARS (0.16) and
+    # omits it at completion (verified live 2026-07-17) — unlike gpt-image-2,
+    # which reports cents. <1 → dollars, ≥1 → cents, missing → estimator.
+    cost_raw = data.get("cost") or job.get("cost")
+    if isinstance(cost_raw, int | float) and cost_raw > 0:
+        cost_usd = float(cost_raw) if cost_raw < 1.0 else float(cost_raw) / 100.0
+    else:
+        cost_usd = kitty_api.estimate_cost_cents(
+            workflow_id=kitty_api.WORKFLOW_KREA2_TURBO,
+        ) / 100.0
+    return out_path, cost_usd
+
+
+async def generate_krea2_canon(
+    prompt: str,
+    name: str = "canon",
+    *,
+    out_dir: Path | str,
+    batch: int = 2,
+    lora_preset: str = "moebius",
+    lora_strength: float = 0.8,
+    aspect_ratio: str = "1:1",
+    remove_bg: bool = True,
+    project: str | None = None,
+) -> AssetResult:
+    """
+    Generate style-locked CANON candidates via Krea 2 Turbo (druidcat API).
+
+    This is the programmatic path to the same generator as
+    druidcat.com/kitty-ai-studio/krea2-turbo/: the Style-LoRA preset (default
+    "moebius" @ 0.8 — the Cats-vs-Weasels canon style) is resolved
+    server-side, so prompts stay style-neutral and trigger words are never
+    baked in.
+
+    Per candidate i: submit → poll → download `<name>_cand<i>_raw.png` →
+    (optionally) rembg to `<name>_cand<i>.png` with the same
+    validate-or-keep-original alpha guard the decor pipeline uses. Selection
+    of the winning candidate (vision review, rename to the final canon file)
+    is the CALLER's job — this function only produces candidates.
+
+    Args:
+        prompt:        Style-neutral subject prompt (see ASSET_PROMPTS.md).
+        name:          Asset name — file stem for the candidates.
+        out_dir:       Target directory (e.g. D:/CopsNRobbers/cats).
+        batch:         Number of candidates (each is one 16¢ job).
+        lora_preset:   Krea2 preset id (see kitty_api.KREA2_LORA_PRESETS).
+        lora_strength: Preset strength, clamped to the page's 0–1.5 slider.
+        aspect_ratio:  Kitty-allowed aspect (1:1 for characters).
+        remove_bg:     rembg each candidate to alpha (built-in mechanism).
+        project:       Owning project (usage tracking only).
+    """
+    import asyncio
+
+    from tools import kitty_api
+    from tools.rembg_wrapper import remove_background
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = max(1, min(int(batch), 16))
+
+    files: list[Path] = []
+    total_cost = 0.0
+    alpha_ok = 0
+    for i in range(n):
+        payload = kitty_api.build_krea2_input(
+            prompt,
+            aspect_ratio=aspect_ratio,
+            lora_preset=lora_preset,
+            lora_preset_strength=lora_strength,
+        )
+        raw_path = out_dir / f"{name}_cand{i}_raw.png"
+        logger.info(
+            "krea2 canon '{n}': candidate {i}/{t} (preset={p}@{s})",
+            n=name, i=i + 1, t=n, p=lora_preset, s=lora_strength,
+        )
+        raw_path, cost = await asyncio.to_thread(_krea2_generate_one, payload, raw_path)
+        total_cost += cost
+        files.append(raw_path)
+
+        if remove_bg:
+            alpha_path = out_dir / f"{name}_cand{i}.png"
+            def _mask(src: Path = raw_path, dst: Path = alpha_path) -> bool:
+                for model in ("isnet-anime", "u2net"):
+                    try:
+                        remove_background(src, dst, model=model)
+                    except Exception as e:  # noqa: BLE001 — try next model
+                        logger.warning(
+                            "krea2 canon: rembg {m} failed on {f}: {e}",
+                            m=model, f=src.name, e=e,
+                        )
+                        continue
+                    pct = _alpha_pct(dst)
+                    if 2.0 <= pct <= 98.0:
+                        return True
+                    logger.warning(
+                        "krea2 canon: rembg {m} on {f} alpha {p:.1f}% out of range",
+                        m=model, f=src.name, p=pct,
+                    )
+                dst.unlink(missing_ok=True)
+                return False
+            if await asyncio.to_thread(_mask):
+                files.append(alpha_path)
+                alpha_ok += 1
+
+    return AssetResult(
+        asset_type="krea2_canon",
+        name=name,
+        output_dir=out_dir,
+        files=files,
+        metadata={
+            "prompt": prompt,
+            "lora_preset": lora_preset,
+            "lora_strength": lora_strength,
+            "aspect_ratio": aspect_ratio,
+            "candidates": n,
+            "alpha_ok": alpha_ok,
+            "out_dir": str(out_dir),
+            "project": project,
+        },
+        cost_usd=total_cost,
+    )
+
+
 def _ui_prompt(description: str, element_type: str) -> str:
     """Build prompt for a UI element."""
     return (

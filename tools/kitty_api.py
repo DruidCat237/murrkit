@@ -50,6 +50,31 @@ WORKFLOW_GPT_IMAGE_2 = "gpt-image-2"            # text-to-image
 WORKFLOW_GPT_IMAGE_2_EDIT = "gpt-image-2-edit"  # image-to-image
 WORKFLOW_NANO_BANANA_2 = "nano-banana-2"        # Gemini Flash Image (edit)
 WORKFLOW_NANO_BANANA_PRO = "nano-banana-pro"    # Gemini Flash Image Pro
+WORKFLOW_KREA2_TURBO = "krea2-turbo"            # Krea 2 t2i + Style LoRA presets
+
+# Krea 2 Turbo preinstalled Style-LoRA presets — mirrors the krea2-turbo page
+# dropdown (druidcat-theme page-cat-motion-ai.php). Trigger words are handled
+# server-side; the preset id is all the API needs.
+KREA2_LORA_PRESETS = {
+    "realism-v2", "ultrareal", "fire-and-ice", "retro-anime",
+    "flat-illustration", "moebius", "retro-vintage-photo", "none",
+}
+# The strength slider on the page runs 0.00–1.50.
+KREA2_STRENGTH_MAX = 1.5
+
+# The krea2 worker expects the page's VERBOSE aspect labels (verified live:
+# a bare "1:1" was ignored and produced 16:9). Keys = plain ratios accepted
+# by build_krea2_input; values = what actually goes on the wire.
+KREA2_ASPECT_LABELS = {
+    "1:1": "1:1 (Square)",
+    "16:9": "16:9 (Widescreen)",
+    "9:16": "9:16 (Portrait Widescreen)",
+    "4:3": "4:3 (Standard)",
+    "3:4": "3:4 (Portrait Standard)",
+    "3:2": "3:2 (Photo)",
+    "2:3": "2:3 (Portrait Photo)",
+    "21:9": "21:9 (Ultrawide)",
+}
 
 # Aspect ratios accepted by gpt-image-2 (subset of UI list).
 ALLOWED_ASPECT_RATIOS = {
@@ -70,6 +95,7 @@ def estimate_cost_cents(
     quality: str = "medium",
     resolution: str = "1K",
     aspect_ratio: str = "1:1",
+    batch: int = 1,
 ) -> int:
     """Mirror of the Kitty AI Studio app `calculateWorkflowCost` for the
     image-gen workflows we actually call.
@@ -80,6 +106,11 @@ def estimate_cost_cents(
         non-wide 4K is billed as 2K (1.5×).
 
     Nano-Banana-2: 1K=20, 2K=30, 4K=40 cents (flat per resolution).
+
+    Krea 2 Turbo: batch-tiered like the website (16¢ single → 14¢/img at 4 →
+    12¢/img at 8 → 10¢/img at 16); murrkit submits single jobs, so an N-image
+    batch is priced at N × the best tier rate ≤ N (matches the site tiers on
+    the tier sizes themselves). `batch` is ignored by other workflows.
     """
     import math
 
@@ -95,12 +126,100 @@ def estimate_cost_cents(
     if w.startswith("nano-banana-2"):
         return {"4K": 40, "2K": 30}.get(resolution.upper(), 20)
 
+    if w == WORKFLOW_KREA2_TURBO:
+        n = max(1, int(batch))
+        per_image = {1: 16, 2: 16, 4: 14, 8: 12, 16: 10}
+        tier = max((t for t in per_image if t <= n), default=1)
+        return int(math.ceil(n * per_image[tier]))
+
     # Fallback to flat 20¢ for unknown image workflows.
     return 20
 
 
 def estimate_cost_usd(**kwargs: Any) -> float:
     return estimate_cost_cents(**kwargs) / 100.0
+
+
+def build_krea2_input(
+    prompt: str,
+    *,
+    aspect_ratio: str = "1:1",
+    lora_preset: str = "moebius",
+    lora_preset_strength: float = 0.8,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Build the `input` payload for a krea2-turbo job.
+
+    Mirrors the krea2-turbo page's `baseParams` exactly (workflow_id is the
+    envelope's `workflowId`, not part of input here): prompt, aspect_ratio,
+    lora_preset, lora_preset_strength, seed. Trigger words are handled
+    server-side per preset — never bake them into the prompt.
+
+    Fail-loud validation: unknown preset / aspect is a caller bug, not
+    something to silently coerce. Strength clamps to the page slider range.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        raise ValueError("krea2: prompt is empty")
+    if lora_preset not in KREA2_LORA_PRESETS:
+        raise ValueError(
+            f"krea2: unknown lora_preset {lora_preset!r} "
+            f"(allowed: {sorted(KREA2_LORA_PRESETS)})"
+        )
+    aspect_key = (aspect_ratio or "").strip()
+    aspect_label = KREA2_ASPECT_LABELS.get(aspect_key)
+    if aspect_label is None and aspect_key in KREA2_ASPECT_LABELS.values():
+        aspect_label = aspect_key  # already the verbose form
+    if aspect_label is None:
+        raise ValueError(
+            f"krea2: aspect_ratio {aspect_ratio!r} not in {sorted(KREA2_ASPECT_LABELS)}"
+        )
+    strength = max(0.0, min(float(lora_preset_strength), KREA2_STRENGTH_MAX))
+    if seed is None:
+        import random
+        seed = random.randint(0, 1_000_000_000)
+    return {
+        "prompt": p,
+        "aspect_ratio": aspect_label,
+        "lora_preset": lora_preset,
+        "lora_preset_strength": strength,
+        "seed": int(seed),
+    }
+
+
+def extract_krea2_urls(data: dict[str, Any]) -> list[str]:
+    """Pull all result image URLs from a completed krea2 job payload.
+
+    The krea2 worker returns `{output: {outputs: [{url | s3_key}, ...]}}`
+    (the site reads `result?.output?.outputs || result?.outputs`). An
+    `s3_key` maps to the stable Kitty /media streaming URL — same trick as
+    `upload_file_sync`. Falls back to the generic single-URL extractor for
+    payloads normalized by the WordPress plugin.
+    """
+    from urllib.parse import quote
+
+    output = data.get("output") or {}
+    outputs = None
+    if isinstance(output, dict):
+        outputs = output.get("outputs")
+    if outputs is None:
+        outputs = data.get("outputs")
+
+    urls: list[str] = []
+    if isinstance(outputs, list):
+        for item in outputs:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url") or item.get("imageURL")
+            s3_key = item.get("s3_key")
+            if isinstance(url, str) and url:
+                urls.append(url)
+            elif isinstance(s3_key, str) and s3_key:
+                urls.append(f"{KITTY_BASE}/media?key={quote(s3_key)}&endpoint=1")
+    if urls:
+        return urls
+    # Plugin-normalized single-URL shape (imageURL/url at output top level).
+    return [extract_media_url(data)]
 
 
 class KittyApiError(RuntimeError):

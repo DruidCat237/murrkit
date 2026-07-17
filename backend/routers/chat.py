@@ -3566,6 +3566,15 @@ def _build_captain_prompt(
         "`biome_tileset`, with `name` = the biome id from `tilesets[].biome` "
         "(→ Generated/Tilesets/ + auto-published to "
         "/assets/tilesets/<project>/<biome>/sheet.png)",
+        "     • Style-locked CANON art via Krea 2 Turbo (druidcat API; Style-"
+        "LoRA rozwiązywana serwerowo, triggera NIE wpisujesz w prompt) → "
+        "`krea2_canon` + `workflow_id: 'krea2-turbo'` + extra: { batch: 2-4, "
+        "lora_preset: 'moebius', lora_strength: 0.8, aspect_ratio: '1:1', "
+        "out_dir: '<absolutna ścieżka docelowa, np. D:/CopsNRobbers/cats>' } "
+        "— worker generuje kandydatów <name>_candN(_raw).png + zdejmuje tło "
+        "wbudowanym rembg; wybór zwycięzcy i rename na finalny canon to TWÓJ "
+        "krok po generacji (vision review). Cena: 16¢/obraz (batch-tiery jak "
+        "na stronie).",
         "   So a project browser shows a clean Characters / Backgrounds / UI / "
         "FX / Tilesets separation. A volleyball is a `sprite`; the beach "
         "backdrop is a `background`; the score readout is a `ui-element` — "

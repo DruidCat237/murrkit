@@ -120,6 +120,8 @@ ASSET_ROLE_SUBFOLDER: dict[str, str] = {
     "tile": "Tilesets",
     "biome_tileset": "Tilesets",  # Map Studio 4×4 autotile sheets (per biome)
     "biome-tileset": "Tilesets",
+    "krea2_canon": "Canons",      # style-locked canon art via Krea 2 Turbo
+    "krea2-canon": "Canons",
 }
 
 
