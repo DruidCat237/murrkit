@@ -3001,8 +3001,18 @@ def _build_captain_prompt(
         "wprowadza każdy beat (nowy wróg, mechanika, layout).",
         "  7. **Win / lose conditions** — dokładnie co wygrywa, co przegrywa, co "
         "z soft-lockami i restartem.",
-        "  8. **Art direction** — paleta, mood, styl (cartoon/pixel/painterly), "
-        "spójność z referencjami usera jeśli są.",
+        "  8. **Art direction + wybór modelu graficznego** — paleta, mood, styl "
+        "(cartoon/pixel/painterly), spójność z referencjami usera jeśli są. "
+        "W TEJ sekcji GDD ZAWSZE postaw userowi jedno pytanie o styl: czy chce "
+        "**domyślny, czysty look (GPT-Image-2)**, czy **wyróżniający się styl "
+        "artystyczny**. Podpowiedz wprost, że open-source'owe modele graficzne — "
+        "przede wszystkim **Krea 2 Turbo + Style LoRA** (moebius, retro-anime, "
+        "flat-illustration, ultrareal, fire-and-ice, …) — dają bardziej wyszukane "
+        "i spójne stylistycznie art niż GPT-Image-2, i ZAPROPONUJ, że zanim user "
+        "zdecyduje możesz **wygenerować jeden testowy asset z tej gry** na takim "
+        "modelu (krea2 + wybrana LoRA, batch:1), żeby zobaczył styl na żywo. "
+        "**DEFAULT ZAWSZE = GPT-Image-2**; Krea2/LoRA to opcja per-projekt, "
+        "wchodzi TYLKO gdy user świadomie ją wybierze dla TEJ gry.",
         "  9. **Juice** — anticipation/squash, screen-shake, particles, sound na key "
         "events, camera feedback — co sprawia że feel jest 300% nie 20%.",
         "",
@@ -3566,24 +3576,29 @@ def _build_captain_prompt(
         "`biome_tileset`, with `name` = the biome id from `tilesets[].biome` "
         "(→ Generated/Tilesets/ + auto-published to "
         "/assets/tilesets/<project>/<biome>/sheet.png)",
-        "     • Style-locked CANON art via Krea 2 Turbo (druidcat API; Style-"
-        "LoRA rozwiązywana serwerowo, triggera NIE wpisujesz w prompt) → "
-        "`krea2_canon` + `workflow_id: 'krea2-turbo'` + extra: { batch: 2-4, "
-        "lora_preset: 'moebius', lora_strength: 0.8, aspect_ratio: '1:1', "
-        "out_dir: '<absolutna ścieżka docelowa, np. D:/CopsNRobbers/cats>' } "
-        "— worker generuje kandydatów <name>_candN(_raw).png + zdejmuje tło "
-        "wbudowanym rembg; wybór zwycięzcy i rename na finalny canon to TWÓJ "
-        "krok po generacji (vision review). Cena: 16¢/obraz (batch-tiery jak "
-        "na stronie).",
-        "   **Image model choice (`workflow_id`)** — the default is "
-        "`gpt-image-2`. For `prop` / `background` / `tileset` / `ui-element` / "
-        "`particle-fx` rows you MAY instead set `workflow_id: 'nano-banana-2'` "
-        "(Gemini 3.1 Flash Image — flat 20¢/1K·30¢/2K·40¢/4K, no quality knob, "
-        "often crisper edges / less VAE blur than gpt-image-2). `sprite` rows "
-        "always use the multi-frame pipeline (gpt-image-2) unless "
-        "`workflow_id:'gpt-image-2-edit'` + base_image_path (identity-preserving "
-        "single edit); `krea2_canon` rows use `krea2-turbo`. Any other/unknown "
-        "workflow_id on a general row safely falls back to gpt-image-2.",
+        "     • **[OPT-IN, per-projekt] Style-locked CANON art via Krea 2 Turbo** "
+        "— UŻYWAJ TYLKO gdy user w GDD (sekcja Art direction) świadomie wybrał "
+        "wyróżniający się styl artystyczny dla TEJ gry, albo poprosił o testowy "
+        "asset w tym stylu. To NIE jest domyślny tor — default zawsze "
+        "GPT-Image-2. `krea2_canon` + `workflow_id: 'krea2-turbo'` + extra: "
+        "{ batch: 2-4 (test = 1), lora_preset: '<preset wybrany przez usera, np. "
+        "moebius / retro-anime / flat-illustration>', lora_strength: 0.8, "
+        "aspect_ratio: '1:1', out_dir: '<ścieżka assetów TEJ gry>' } (Style-LoRA "
+        "rozwiązywana serwerowo, triggera NIE wpisujesz w prompt) — worker "
+        "generuje kandydatów <name>_candN(_raw).png + zdejmuje tło rembg; wybór "
+        "zwycięzcy i rename na finalny canon to TWÓJ krok (vision review). Cena: "
+        "16¢/obraz (batch-tiery jak na stronie).",
+        "   **Image model choice (`workflow_id`) — DEFAULT ZAWSZE `gpt-image-2`.** "
+        "Nie zmieniaj modelu z własnej inicjatywy. Dwa wyjątki, oba świadome: "
+        "(a) user wybrał wyróżniający się styl artystyczny w GDD → tor "
+        "`krea2_canon` (`krea2-turbo` + LoRA, patrz wyżej); (b) dla pojedynczego "
+        "`prop`/`background`/`tileset`/`ui-element`/`particle-fx` MOŻESZ użyć "
+        "`workflow_id: 'nano-banana-2'` (Gemini 3.1 Flash Image — flat "
+        "20¢/1K·30¢/2K·40¢/4K, ostrzejsze krawędzie / mniej VAE-blur) gdy dany "
+        "asset tego wymaga. `sprite` zawsze idzie multi-frame pipeline "
+        "(gpt-image-2), chyba że `workflow_id:'gpt-image-2-edit'` + "
+        "base_image_path (identity-preserving single edit). Każdy inny/nieznany "
+        "workflow_id na zwykłym wierszu bezpiecznie spada na gpt-image-2.",
         "   So a project browser shows a clean Characters / Backgrounds / UI / "
         "FX / Tilesets separation. A volleyball is a `sprite`; the beach "
         "backdrop is a `background`; the score readout is a `ui-element` — "
