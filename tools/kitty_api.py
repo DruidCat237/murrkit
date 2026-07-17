@@ -48,9 +48,11 @@ KITTY_BASE = "https://druidcat.com/wp-json/kitty-app/v1"
 # These are the `backendId` (NOT the `endpointId` with `kitty:` prefix).
 WORKFLOW_GPT_IMAGE_2 = "gpt-image-2"            # text-to-image
 WORKFLOW_GPT_IMAGE_2_EDIT = "gpt-image-2-edit"  # image-to-image
-WORKFLOW_NANO_BANANA_2 = "nano-banana-2"        # Gemini Flash Image (edit)
-WORKFLOW_NANO_BANANA_PRO = "nano-banana-pro"    # Gemini Flash Image Pro
+WORKFLOW_NANO_BANANA_2 = "nano-banana-2"        # Gemini 3.1 Flash Image (t2i + edit)
 WORKFLOW_KREA2_TURBO = "krea2-turbo"            # Krea 2 t2i + Style LoRA presets
+# NOTE: nano-banana-pro was RETIRED on the Kitty backend
+# (druidcat_retire_models_2026) — the workflow 404s now, so murrkit must not
+# offer it. Deliberately absent from the registry below.
 
 # Krea 2 Turbo preinstalled Style-LoRA presets — mirrors the krea2-turbo page
 # dropdown (druidcat-theme page-cat-motion-ai.php). Trigger words are handled
@@ -83,6 +85,36 @@ ALLOWED_ASPECT_RATIOS = {
 }
 ALLOWED_QUALITY = {"low", "medium", "high"}
 ALLOWED_RESOLUTION = {"1K", "2K", "4K"}
+
+# ---------------------------------------------------------------------------
+# Image-model registry — the single source of truth for which image models
+# murrkit can route to (all via the Kitty kitty-app/v1 backend). This is what
+# lets the captain + queue UI offer model choice instead of hardcoding
+# gpt-image-2. Each entry: `kind` (t2i = text-only, edit = needs a reference
+# image, both = works with or without) + display `label` + whether the model
+# takes a `quality` knob (nano-banana / krea2 price purely by resolution/batch).
+# Adding a model = one entry here + a branch in gpt_image_2.generate_single_image.
+# ---------------------------------------------------------------------------
+IMAGE_MODELS: dict[str, dict[str, Any]] = {
+    WORKFLOW_GPT_IMAGE_2:      {"label": "GPT-Image-2",         "kind": "t2i",  "quality": True},
+    WORKFLOW_GPT_IMAGE_2_EDIT: {"label": "GPT-Image-2 Edit",    "kind": "edit", "quality": True},
+    WORKFLOW_NANO_BANANA_2:    {"label": "Nano Banana 2",       "kind": "both", "quality": False},
+    WORKFLOW_KREA2_TURBO:      {"label": "Krea 2 Turbo (LoRA)", "kind": "t2i",  "quality": False},
+}
+
+# Models usable as a drop-in single-image generator for props / backgrounds /
+# tilesets / UI. krea2 has its own canon pipeline (LoRA + batch), and
+# gpt-image-2-edit needs a reference image (routes through the sprite edit
+# path), so neither is a general substitute here.
+GENERAL_IMAGE_WORKFLOWS = (WORKFLOW_GPT_IMAGE_2, WORKFLOW_NANO_BANANA_2)
+
+
+def resolve_image_workflow(workflow_id: str | None, *, default: str = WORKFLOW_GPT_IMAGE_2) -> str:
+    """Validate a caller-supplied image workflow_id against GENERAL_IMAGE_WORKFLOWS,
+    falling back to `default` for None/unknown so a bad UI value can never route
+    to a non-image (or retired) workflow."""
+    wf = (workflow_id or "").strip().lower()
+    return wf if wf in GENERAL_IMAGE_WORKFLOWS else default
 
 # Wide aspect ratios — only ones eligible for true-4K billing on GPT-Image-2.
 # Other ratios at 4K are billed at 2K rates (Kitty tariff).
@@ -185,6 +217,47 @@ def build_krea2_input(
         "lora_preset_strength": strength,
         "seed": int(seed),
     }
+
+
+def build_nano_banana_input(
+    prompt: str,
+    *,
+    aspect_ratio: str = "1:1",
+    resolution: str = "1K",
+    image_urls: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build the `input` payload for a nano-banana-2 job (Gemini 3.1 Flash Image).
+
+    Mirrors the nano-banana-2 page exactly (druidcat-theme page-cat-motion-ai.php
+    ``generateNb2Image``): ``mode`` is always ``"edit"`` — the model handles both
+    text-only and image-guided generation from that single mode — plus prompt,
+    aspect_ratio, resolution, and OPTIONAL image_urls. There is no `quality`
+    knob; price is flat per resolution (1K=20 / 2K=30 / 4K=40 ¢).
+
+    Fail-loud validation mirrors build_krea2_input: an unknown aspect/resolution
+    is a caller bug, not something to silently coerce.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        raise ValueError("nano-banana-2: prompt is empty")
+    if aspect_ratio not in ALLOWED_ASPECT_RATIOS:
+        raise ValueError(
+            f"nano-banana-2: aspect_ratio {aspect_ratio!r} not in {sorted(ALLOWED_ASPECT_RATIOS)}"
+        )
+    res = (resolution or "1K").upper()
+    if res not in ALLOWED_RESOLUTION:
+        raise ValueError(
+            f"nano-banana-2: resolution {resolution!r} not in {sorted(ALLOWED_RESOLUTION)}"
+        )
+    payload: dict[str, Any] = {
+        "mode": "edit",
+        "prompt": p,
+        "aspect_ratio": aspect_ratio,
+        "resolution": res,
+    }
+    if image_urls:
+        payload["image_urls"] = list(image_urls)
+    return payload
 
 
 def extract_krea2_urls(data: dict[str, Any]) -> list[str]:

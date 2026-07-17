@@ -651,6 +651,7 @@ async def generate_background(
     *,
     output_dir: Path | None = None,
     project: str | None = None,
+    workflow_id: str = "gpt-image-2",
 ) -> AssetResult:
     """
     Generate parallax background layers.
@@ -661,11 +662,12 @@ async def generate_background(
         output_dir:  Output directory.
         project:     Owning project (threaded from the gen-queue task) for the
                      per-project output dir. Ignored when output_dir is given.
+        workflow_id: Image model to use (gpt-image-2 default; nano-banana-2 etc.).
 
     Returns:
         AssetResult with one PNG per layer.
     """
-    from tools.gpt_image_2 import submit_generate, poll_until_done
+    from tools.gpt_image_2 import generate_single_image
 
     from agents.sprite_pipeline import (
         _slugify, _default_output_dir, subfolder_for_role,
@@ -686,8 +688,10 @@ async def generate_background(
     for layer in layer_list:
         logger.info("  Generating bg layer: {layer}", layer=layer)
         prompt = _background_prompt(description, layer)
-        task_id = submit_generate(prompt=prompt, size="16:9", quality="high", resolution="2K")
-        image_url, cost = await poll_until_done(task_id)
+        image_url, cost = await generate_single_image(
+            prompt, workflow_id=workflow_id, aspect_ratio="16:9",
+            quality="high", resolution="2K", project=project,
+        )
         total_cost += cost
 
         import aiohttp
@@ -713,6 +717,7 @@ async def generate_tileset(
     *,
     output_dir: Path | None = None,
     project: str | None = None,
+    workflow_id: str = "gpt-image-2",
 ) -> AssetResult:
     """
     Generate a tileset sheet.
@@ -723,8 +728,9 @@ async def generate_tileset(
         output_dir:  Output directory.
         project:     Owning project (threaded from the gen-queue task) for the
                      per-project output dir. Ignored when output_dir is given.
+        workflow_id: Image model to use (gpt-image-2 default; nano-banana-2 etc.).
     """
-    from tools.gpt_image_2 import submit_generate, poll_until_done
+    from tools.gpt_image_2 import generate_single_image
 
     from agents.sprite_pipeline import (
         _slugify, _default_output_dir, subfolder_for_role,
@@ -737,8 +743,10 @@ async def generate_tileset(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prompt = _tileset_prompt(description, tile_type)
-    task_id = submit_generate(prompt=prompt, size="4:3", quality="high", resolution="2K")
-    image_url, cost = await poll_until_done(task_id)
+    image_url, cost = await generate_single_image(
+        prompt, workflow_id=workflow_id, aspect_ratio="4:3",
+        quality="high", resolution="2K", project=project,
+    )
 
     import aiohttp
     out_path = output_dir / f"tileset_{slug}.png"
@@ -777,6 +785,7 @@ async def generate_ui_element(
     *,
     output_dir: Path | None = None,
     project: str | None = None,
+    workflow_id: str = "gpt-image-2",
 ) -> AssetResult:
     """
     Generate a UI element PNG.
@@ -787,8 +796,9 @@ async def generate_ui_element(
         output_dir:   Output directory.
         project:      Owning project (threaded from the gen-queue task) for the
                       per-project output dir. Ignored when output_dir is given.
+        workflow_id:  Image model to use (gpt-image-2 default; nano-banana-2 etc.).
     """
-    from tools.gpt_image_2 import submit_generate, poll_until_done
+    from tools.gpt_image_2 import generate_single_image
 
     from agents.sprite_pipeline import (
         _slugify, _default_output_dir, subfolder_for_role,
@@ -801,8 +811,10 @@ async def generate_ui_element(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prompt = _ui_prompt(description, element_type)
-    task_id = submit_generate(prompt=prompt, size="1:1", quality="high", resolution="1K")
-    image_url, cost = await poll_until_done(task_id)
+    image_url, cost = await generate_single_image(
+        prompt, workflow_id=workflow_id, aspect_ratio="1:1",
+        quality="high", resolution="1K", project=project,
+    )
 
     import aiohttp
     out_path = output_dir / f"{slug}.png"
@@ -826,6 +838,7 @@ async def generate_particle_fx(
     *,
     output_dir: Path | None = None,
     project: str | None = None,
+    workflow_id: str = "gpt-image-2",
 ) -> AssetResult:
     """
     Generate a particle effect sprite sheet.
@@ -836,8 +849,9 @@ async def generate_particle_fx(
         output_dir:  Output directory.
         project:     Owning project (threaded from the gen-queue task) for the
                      per-project output dir. Ignored when output_dir is given.
+        workflow_id: Image model to use (gpt-image-2 default; nano-banana-2 etc.).
     """
-    from tools.gpt_image_2 import submit_generate, poll_until_done
+    from tools.gpt_image_2 import generate_single_image
 
     from agents.sprite_pipeline import (
         _slugify, _default_output_dir, subfolder_for_role,
@@ -850,8 +864,10 @@ async def generate_particle_fx(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prompt = _particle_prompt(description, fx_type)
-    task_id = submit_generate(prompt=prompt, size="16:2", quality="high", resolution="1K")
-    image_url, cost = await poll_until_done(task_id)
+    image_url, cost = await generate_single_image(
+        prompt, workflow_id=workflow_id, aspect_ratio="16:2",
+        quality="high", resolution="1K", project=project,
+    )
 
     import aiohttp
     out_path = output_dir / f"{slug}.png"

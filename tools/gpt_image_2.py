@@ -288,6 +288,61 @@ def submit_edit_from_path(
     )
 
 
+async def generate_single_image(
+    prompt: str,
+    *,
+    workflow_id: str = "gpt-image-2",
+    aspect_ratio: str = "1:1",
+    quality: str = "high",
+    resolution: str = "1K",
+    image_urls: list[str] | None = None,
+    project: str | None = None,
+) -> tuple[str, float]:
+    """Generate ONE image with any registered Kitty image model → (url, cost_usd).
+
+    Routes by workflow_id so the asset pipeline (props / backgrounds / tilesets /
+    UI) is no longer hardcoded to gpt-image-2:
+
+      - gpt-image-2   → dedicated submit/poll path (keeps the quality knob + the
+                        synchronous-completion short-circuit).
+      - nano-banana-2 → generic kitty submit_and_wait; aspect is coerced to the
+                        closest allowed value (parity with gpt-image-2 leniency,
+                        since callers pass sizes like "16:2"); cost is the flat
+                        per-resolution tariff (the completion omits cost).
+
+    Unknown/edit-only workflows raise — general callers should pass a
+    GENERAL_IMAGE_WORKFLOWS id (validate with kitty_api.resolve_image_workflow).
+    """
+    from tools import kitty_api as _k
+
+    wf = (workflow_id or _k.WORKFLOW_GPT_IMAGE_2).lower()
+    if wf == _k.WORKFLOW_GPT_IMAGE_2:
+        task_id = submit_generate(
+            prompt=prompt, size=aspect_ratio, quality=quality,
+            resolution=resolution, project=project,
+        )
+        return await poll_until_done(task_id)
+    if wf == _k.WORKFLOW_NANO_BANANA_2:
+        aspect = (
+            aspect_ratio if aspect_ratio in _k.ALLOWED_ASPECT_RATIOS
+            else _closest_allowed_aspect(aspect_ratio)
+        )
+        input_ = _k.build_nano_banana_input(
+            prompt, aspect_ratio=aspect, resolution=resolution, image_urls=image_urls,
+        )
+        url, _payload = await _k.submit_and_wait(
+            _k.WORKFLOW_NANO_BANANA_2, input_, media_type="image", max_wait_min=25,
+        )
+        cost = _k.estimate_cost_usd(
+            workflow_id=_k.WORKFLOW_NANO_BANANA_2, resolution=resolution,
+        )
+        return url, cost
+    raise ValueError(
+        f"generate_single_image: unsupported workflow_id {workflow_id!r} "
+        f"(general image models: {_k.GENERAL_IMAGE_WORKFLOWS})"
+    )
+
+
 # In-memory cache used when the backend completes a job during submit
 _SYNC_COMPLETIONS: dict[int, dict[str, Any]] = {}
 

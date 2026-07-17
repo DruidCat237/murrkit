@@ -3575,6 +3575,15 @@ def _build_captain_prompt(
         "wbudowanym rembg; wybór zwycięzcy i rename na finalny canon to TWÓJ "
         "krok po generacji (vision review). Cena: 16¢/obraz (batch-tiery jak "
         "na stronie).",
+        "   **Image model choice (`workflow_id`)** — the default is "
+        "`gpt-image-2`. For `prop` / `background` / `tileset` / `ui-element` / "
+        "`particle-fx` rows you MAY instead set `workflow_id: 'nano-banana-2'` "
+        "(Gemini 3.1 Flash Image — flat 20¢/1K·30¢/2K·40¢/4K, no quality knob, "
+        "often crisper edges / less VAE blur than gpt-image-2). `sprite` rows "
+        "always use the multi-frame pipeline (gpt-image-2) unless "
+        "`workflow_id:'gpt-image-2-edit'` + base_image_path (identity-preserving "
+        "single edit); `krea2_canon` rows use `krea2-turbo`. Any other/unknown "
+        "workflow_id on a general row safely falls back to gpt-image-2.",
         "   So a project browser shows a clean Characters / Backgrounds / UI / "
         "FX / Tilesets separation. A volleyball is a `sprite`; the beach "
         "backdrop is a `background`; the score readout is a `ui-element` — "

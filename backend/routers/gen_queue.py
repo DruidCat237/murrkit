@@ -321,6 +321,7 @@ class EditPlannedRequest(BaseModel):
     resolution: str | None = None      # "1K" | "2K" | "4K"
     aspect_ratio: str | None = None    # "1:1" | "16:9" | …
     base_image_path: str | None = None # absolute disk path to edit-reference
+    workflow_id: str | None = None     # image model: "gpt-image-2" | "nano-banana-2"
 
 
 @router.post("/edit/{task_id}")
@@ -343,15 +344,26 @@ async def edit_planned(task_id: str, req: EditPlannedRequest) -> dict[str, Any]:
             detail=f"task is {t.status!r}, only planned rows are editable",
         )
 
-    # Recompute cost if quality / resolution / aspect_ratio changed.
+    from tools import kitty_api as _k
+    # A model switch is only honoured for general single-image workflows; an
+    # unknown value safely resolves back to the row's current model.
+    new_workflow: str | None = None
+    if req.workflow_id is not None:
+        new_workflow = _k.resolve_image_workflow(
+            req.workflow_id, default=t.planned_workflow or "gpt-image-2",
+        )
+
+    # Recompute cost if quality / resolution / aspect_ratio / model changed —
+    # the model matters because nano-banana-2 is flat per resolution while
+    # gpt-image-2 is quality-tiered.
     cost_cents: int | None = None
-    if req.quality or req.resolution or req.aspect_ratio:
-        from tools import kitty_api as _k
+    if req.quality or req.resolution or req.aspect_ratio or new_workflow:
         cost_cents = _k.estimate_cost_cents(
-            workflow_id=t.planned_workflow or "gpt-image-2",
+            workflow_id=new_workflow or t.planned_workflow or "gpt-image-2",
             quality=req.quality or t.planned_quality or "medium",
             resolution=req.resolution or t.planned_resolution or "1K",
             aspect_ratio=req.aspect_ratio or t.planned_aspect_ratio or "1:1",
+            batch=int((t.extra or {}).get("batch") or 1),
         )
 
     # Validate base_image_path if provided (allow empty string to clear it,
@@ -372,6 +384,7 @@ async def edit_planned(task_id: str, req: EditPlannedRequest) -> dict[str, Any]:
         aspect_ratio=req.aspect_ratio,
         cost_cents=cost_cents,
         base_image_path=req.base_image_path,
+        workflow_id=new_workflow,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="task not found or not planned")
@@ -839,13 +852,19 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
         )
 
     if t.asset_type in ("background", "tileset", "ui-element", "particle-fx"):
+        # Which image model to use — the captain/UI can pick any general image
+        # workflow (gpt-image-2 default, nano-banana-2, …); anything else falls
+        # back to gpt-image-2 so a stale/retired id can't reach the pipeline.
+        from tools.kitty_api import resolve_image_workflow as _resolve_wf
+        chosen_wf = _resolve_wf(t.planned_workflow)
+
         async def worker(task: gq.QueueTask, handle: gq.QueueTaskHandle) -> None:
             from agents.asset_pipeline import (
                 generate_background, generate_tileset,
                 generate_ui_element, generate_particle_fx,
             )
 
-            await handle.progress(10, f"generating {t.asset_type} ({name})")
+            await handle.progress(10, f"generating {t.asset_type} ({name}) via {chosen_wf}")
             await handle.start_heartbeat(
                 eta_seconds=1200.0,  # 20 min — Kitty queue can sit 15-25 min before workers pick up
                 interval_s=4.0,
@@ -853,13 +872,13 @@ async def _dispatch_from_plan(t: "gq.QueueTask") -> str | None:
             )
             kind = t.asset_type
             if kind == "background":
-                result = await generate_background(t.prompt, project=task.project)
+                result = await generate_background(t.prompt, project=task.project, workflow_id=chosen_wf)
             elif kind == "tileset":
-                result = await generate_tileset(t.prompt, project=task.project)
+                result = await generate_tileset(t.prompt, project=task.project, workflow_id=chosen_wf)
             elif kind == "ui-element":
-                result = await generate_ui_element(t.prompt, project=task.project)
+                result = await generate_ui_element(t.prompt, project=task.project, workflow_id=chosen_wf)
             else:
-                result = await generate_particle_fx(t.prompt, project=task.project)
+                result = await generate_particle_fx(t.prompt, project=task.project, workflow_id=chosen_wf)
             await handle.stop_heartbeat()
             await handle.progress(95, "finalising")
             thumb = _thumb_url(result.files[0]) if result.files else None

@@ -526,6 +526,7 @@ async def update_planned(
     aspect_ratio: str | None = None,
     cost_cents: int | None = None,
     base_image_path: str | None = None,
+    workflow_id: str | None = None,
 ) -> QueueTask | None:
     """Mutate a planned row before the user accepts it.
 
@@ -552,6 +553,8 @@ async def update_planned(
         t.cost_usd = cost_cents / 100.0
     if base_image_path is not None:
         t.base_image_path = base_image_path or None
+    if workflow_id is not None:
+        t.planned_workflow = workflow_id
     # Persist the edit so a backend restart doesn't lose user tweaks.
     _persist(t)
     # Re-broadcast so any UI re-renders with the new prompt/cost. Reuse the

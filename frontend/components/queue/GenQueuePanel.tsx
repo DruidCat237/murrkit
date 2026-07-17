@@ -260,6 +260,13 @@ function QueueRow({ task }: { task: QueueTask }) {
   // it out if they decide a row should be fresh-gen.
   const taskBase = (task as unknown as { base_image_path?: string | null }).base_image_path ?? "";
   const [baseDraft, setBaseDraft] = useState(taskBase);
+  // Image-model choice for general asset rows (prop/background/tileset/ui/fx).
+  // Sprite/biome/canon rows have their own fixed pipelines, so the dropdown is
+  // only offered for these types.
+  const workflowChoosable = ["prop", "object", "static", "background", "tileset", "ui-element", "particle-fx"].includes(
+    task.asset_type,
+  );
+  const [workflowDraft, setWorkflowDraft] = useState(task.planned_workflow || "gpt-image-2");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // For Windows-explorer Browse upload of a new reference. Uploads to
@@ -304,8 +311,9 @@ function QueueRow({ task }: { task: QueueTask }) {
     if (!editing) {
       setDraft(task.prompt);
       setBaseDraft(taskBase);
+      setWorkflowDraft(task.planned_workflow || "gpt-image-2");
     }
-  }, [task.prompt, taskBase, editing]);
+  }, [task.prompt, taskBase, task.planned_workflow, editing]);
 
   async function saveEdit() {
     if (saving) return;
@@ -313,7 +321,9 @@ function QueueRow({ task }: { task: QueueTask }) {
     const trimmedBase = baseDraft.trim();
     const promptChanged = trimmedPrompt && trimmedPrompt !== task.prompt;
     const baseChanged = trimmedBase !== taskBase;
-    if (!promptChanged && !baseChanged) {
+    const workflowChanged =
+      workflowChoosable && workflowDraft !== (task.planned_workflow || "gpt-image-2");
+    if (!promptChanged && !baseChanged && !workflowChanged) {
       setEditing(false);
       return;
     }
@@ -324,6 +334,7 @@ function QueueRow({ task }: { task: QueueTask }) {
       if (promptChanged) body.prompt = trimmedPrompt;
       // Always send base_image_path when it differs — empty string clears it.
       if (baseChanged) body.base_image_path = trimmedBase;
+      if (workflowChanged) body.workflow_id = workflowDraft;
       const res = await fetch(`${BACKEND}/api/gen-queue/edit/${task.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -416,9 +427,29 @@ function QueueRow({ task }: { task: QueueTask }) {
             rows={4}
             disabled={saving}
             className="w-full bg-bg-subtle border border-accent/50 rounded px-2 py-1 text-xs font-mono text-text focus:outline-none focus:border-accent disabled:opacity-50"
-            placeholder="Prompt sent to GPT-Image-2 via Kitty…"
+            placeholder="Prompt sent to the image model via Kitty…"
             autoFocus
           />
+
+          {/* Image-model picker — only for general single-image asset types.
+              Nano Banana 2 (Gemini 3.1 Flash) is a per-resolution flat-priced
+              alternative to GPT-Image-2. Sprite/biome/canon rows use their own
+              fixed pipelines and don't show this. */}
+          {workflowChoosable && (
+            <label className="flex items-center gap-2 text-[10px] text-text-dim">
+              <span className="uppercase tracking-wide font-semibold">Model</span>
+              <select
+                value={workflowDraft}
+                onChange={(e) => setWorkflowDraft(e.target.value)}
+                disabled={saving}
+                className="flex-1 bg-bg-subtle border border-line rounded px-1.5 py-1 text-[11px] text-text focus:outline-none focus:border-accent disabled:opacity-50"
+                title="Which image model generates this asset"
+              >
+                <option value="gpt-image-2">GPT-Image-2 (default)</option>
+                <option value="nano-banana-2">Nano Banana 2 · Gemini 3.1 Flash (20/30/40¢)</option>
+              </select>
+            </label>
+          )}
 
           {/* Base-image reference editor — visible when workflow is edit-mode
               OR when a base_image_path is already set. Lets the user retarget
