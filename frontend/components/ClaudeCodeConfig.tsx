@@ -194,7 +194,7 @@ export default function ClaudeCodeConfig() {
           <div className="text-xs text-text-dim mb-1.5 flex items-center gap-1.5">
             <Brain className="h-3 w-3" /> Default model for new chats
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {([
               {
                 id: "claude_sonnet",
@@ -203,11 +203,19 @@ export default function ClaudeCodeConfig() {
               },
               {
                 id: "claude_opus",
-                label: isCodex ? "Codex Heavy" : "Fable 5",
+                label: isCodex ? "Codex Heavy" : "Opus 4.8",
                 desc: isCodex ? "CODEX_MODEL_HEAVY or default" : "Most capable Claude route",
               },
+              {
+                id: "claude_fable",
+                label: "Fable 5",
+                desc: "Premium · credits ($10/$50 MTok)",
+              },
               { id: "deepseek_v4", label: "DeepSeek V4", desc: "Cheap fallback" },
-            ] as const).map((m) => (
+            ] as const)
+              // Codex has no Fable model — hide it in Codex mode.
+              .filter((m) => !(isCodex && m.id === "claude_fable"))
+              .map((m) => (
               <button
                 key={m.id}
                 onClick={() => setModel(m.id)}

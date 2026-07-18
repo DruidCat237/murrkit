@@ -20,12 +20,14 @@ import { getConfig } from "@/lib/api";
 const OPTIONS: { value: ChatModel; label: string; hint: string }[] = [
   { value: "deepseek_v4", label: "DeepSeek", hint: "Cheapest · log triage" },
   { value: "claude_sonnet", label: "Sonnet", hint: "Fast · balanced" },
-  { value: "claude_opus", label: "Fable 5", hint: "Default · best reasoning" },
+  { value: "claude_opus", label: "Opus 4.8", hint: "Default · best reasoning" },
+  { value: "claude_fable", label: "Fable 5", hint: "Premium · credits ($10/$50 MTok)" },
 ];
 
 function optionsForAgent(agentCli: "claude" | "codex") {
   if (agentCli === "codex") {
-    return OPTIONS.map((opt) => {
+    // Codex has no Fable model — hide it in Codex mode.
+    return OPTIONS.filter((opt) => opt.value !== "claude_fable").map((opt) => {
       if (opt.value === "claude_sonnet") return { ...opt, label: "Codex Balanced" };
       if (opt.value === "claude_opus") return { ...opt, label: "Codex Heavy" };
       return opt;

@@ -1,12 +1,14 @@
 """
 Chat router — multi-model chat orchestrator for murrkit.
 
-Supports three model routes, picked client-side:
+Supports four model routes, picked client-side:
     - deepseek_v4    — cheap streaming chat (text-only) via /chat/completions
-    - claude_sonnet  — default local captain route; maps to Claude Sonnet under
+    - claude_sonnet  — fast local captain route; maps to Claude Sonnet under
                        Claude Code or Codex Balanced under Codex
-    - claude_opus    — heavy local captain route; maps to Claude Opus under
+    - claude_opus    — heavy local captain route; maps to Claude Opus (4.8) under
                        Claude Code or Codex Heavy under Codex
+    - claude_fable   — premium Fable 5 captain route (claude-fable-5;
+                       credit-billed); maps to Codex Heavy under Codex
 
 Endpoints
     POST  /api/chat/send                    — synchronous (DeepSeek only) — returns
@@ -198,7 +200,7 @@ _session_by_project: dict[str, str] = _project_memory.load_sessions()
 class ChatSendRequest(BaseModel):
     project_name: str = "default"
     message: str
-    model: str = "deepseek_v4"  # deepseek_v4 | claude_sonnet | claude_opus
+    model: str = "deepseek_v4"  # deepseek_v4 | claude_sonnet | claude_opus | claude_fable
     attachments: list[dict[str, str]] = []  # [{"filename":..., "served_url":..., "abs_path":...}]
     skill_prefix: str | None = None  # e.g. "/autopilot"
 
@@ -412,7 +414,7 @@ async def send_chat(req: ChatSendRequest) -> ChatSendResponse:
 
     if req.model == "deepseek_v4":
         text, cost = await _run_deepseek(user_text, attachments=req.attachments)
-    elif req.model in ("claude_sonnet", "claude_opus"):
+    elif req.model in ("claude_sonnet", "claude_opus", "claude_fable"):
         model_choice = _resolve_model_choice(req.model)
         text, cost = await _run_claude_cli(
             user_text,
@@ -449,7 +451,7 @@ async def chat_stream(ws: WebSocket) -> None:
           "task_id": "<uuid>",
           "project_name": "...",
           "message": "...",
-          "model": "deepseek_v4" | "claude_sonnet" | "claude_opus",
+          "model": "deepseek_v4" | "claude_sonnet" | "claude_opus" | "claude_fable",
           "attachments": [{"filename":..., "served_url":..., "abs_path":...}],
           "skill_prefix": "/autopilot"  (optional)
         }
@@ -507,7 +509,7 @@ async def chat_stream(ws: WebSocket) -> None:
                     got_final = True
                 elif chunk.get("kind") == "token":
                     final_text += chunk.get("text", "")
-        elif model in ("claude_sonnet", "claude_opus"):
+        elif model in ("claude_sonnet", "claude_opus", "claude_fable"):
             model_choice = _resolve_model_choice(model)
             async for chunk in _stream_claude_cli(
                 user_text,
@@ -1145,14 +1147,36 @@ async def _stream_deepseek(
 
 # ---- Local agent CLI backend ------------------------------------------------
 
-# Model pins for the original inner game-maker Claude.  We pin the heavy choice
-# to the exact Fable 5 model ID (verified valid 2026-06-12; $10/$50 per MTok,
-# 1M context) rather than a bare alias so the inner agent never silently drifts
-# to a different build mid-experiment.  The internal key stays "claude_opus"
-# for compatibility (see AGENTS.md).  Sonnet stays on the alias (cheap,
-# always-latest is fine).
-_CLAUDE_OPUS_MODEL = "claude-fable-5"
-_CLAUDE_SONNET_MODEL = "sonnet"
+# Model pins for the original inner game-maker Claude. THREE selectable
+# captain routes, each overridable from `.env` WITHOUT a restart:
+#   • claude_sonnet → "sonnet"          (fast; subscription-covered)
+#   • claude_opus   → "claude-opus-4-8" (heavy default; subscription-covered)
+#   • claude_fable  → "claude-fable-5"  (premium; $10/$50 per MTok, 1M context —
+#                     NOT covered by a plain Max subscription, so it's credit-
+#                     billed and the headless CLI returns "Usage credits are
+#                     required for this model" without ANTHROPIC_API_KEY / credits)
+# The heavy default is Opus (safe on subscription); Fable 5 is an explicit,
+# opt-in third choice. Internal UI keys stay stable for compatibility (AGENTS.md).
+_CLAUDE_OPUS_MODEL_DEFAULT = "claude-opus-4-8"
+_CLAUDE_SONNET_MODEL_DEFAULT = "sonnet"
+_CLAUDE_FABLE_MODEL_DEFAULT = "claude-fable-5"
+
+
+def _claude_heavy_model() -> str:
+    """Resolved --model for the heavy captain route (loop/autoplay + the 'Opus'
+    chat button). Env override wins so a user can retarget the heavy route."""
+    return _env_value("MURRKIT_CLAUDE_HEAVY_MODEL", _CLAUDE_OPUS_MODEL_DEFAULT) or _CLAUDE_OPUS_MODEL_DEFAULT
+
+
+def _claude_fable_model() -> str:
+    """Resolved --model for the Fable 5 captain route (the 'Fable 5' chat
+    button). Premium/credit-billed; env override retargets it if needed."""
+    return _env_value("MURRKIT_CLAUDE_FABLE_MODEL", _CLAUDE_FABLE_MODEL_DEFAULT) or _CLAUDE_FABLE_MODEL_DEFAULT
+
+
+def _claude_fast_model() -> str:
+    """Resolved --model for the light captain route (the 'sonnet' button)."""
+    return _env_value("MURRKIT_CLAUDE_FAST_MODEL", _CLAUDE_SONNET_MODEL_DEFAULT) or _CLAUDE_SONNET_MODEL_DEFAULT
 
 
 def _env_value(key: str, default: str = "") -> str:
@@ -1185,9 +1209,14 @@ def _agent_cli_kind() -> str:
 def _resolve_model_choice(req_model: str) -> str:
     """Map a UI chat model key to the configured CLI --model value."""
     if _agent_cli_kind() == "claude":
-        return _CLAUDE_OPUS_MODEL if req_model == "claude_opus" else _CLAUDE_SONNET_MODEL
+        if req_model == "claude_fable":
+            return _claude_fable_model()
+        if req_model == "claude_opus":
+            return _claude_heavy_model()
+        return _claude_fast_model()
 
-    if req_model == "claude_opus":
+    # Codex has no Fable model — the Fable button maps to the heavy Codex route.
+    if req_model in ("claude_opus", "claude_fable"):
         return _env_value("CODEX_MODEL_HEAVY", settings.codex_model_heavy) or _env_value("CODEX_MODEL", settings.codex_model)
     return _env_value("CODEX_MODEL_FAST", settings.codex_model_fast) or _env_value("CODEX_MODEL", settings.codex_model)
 

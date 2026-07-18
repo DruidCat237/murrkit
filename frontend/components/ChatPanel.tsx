@@ -6,7 +6,7 @@
  *
  * Ported from GameTestMVP/frontend/components/ChatPanel.tsx with adjustments:
  *   - Uses native WebSocket streaming (no polling fallback)
- *   - Multi-model picker (deepseek_v4, claude_sonnet, claude_opus)
+ *   - Multi-model picker (deepseek_v4, claude_sonnet, claude_opus, claude_fable)
  *   - Skill picker dropdown enumerating .claude/skills/ + global skills
  *   - Persists history per project via /api/chat/history
  *   - Live cost meter showing % of BUDGET_LIMIT_USD
@@ -75,12 +75,14 @@ type Msg = {
 const MODEL_OPTIONS: { value: ChatModel; label: string; hint: string; tint: string }[] = [
   { value: "deepseek_v4",   label: "DeepSeek V4 Flash",  hint: "cheap, $/M",    tint: "text-blue-400" },
   { value: "claude_sonnet", label: "Claude Sonnet",  hint: "fast default route",    tint: "text-accent" },
-  { value: "claude_opus",   label: "Fable 5",        hint: "default orchestrator", tint: "text-accent-hot" },
+  { value: "claude_opus",   label: "Opus 4.8",       hint: "default orchestrator", tint: "text-accent-hot" },
+  { value: "claude_fable",  label: "Fable 5",        hint: "premium · $10/$50 MTok · credits", tint: "text-purple-400" },
 ];
 
 function modelOptionsForAgent(agentCli: "claude" | "codex") {
   if (agentCli === "codex") {
-    return MODEL_OPTIONS.map((opt) => {
+    // Codex has no Fable model — drop it so the switch isn't a dead entry.
+    return MODEL_OPTIONS.filter((opt) => opt.value !== "claude_fable").map((opt) => {
       if (opt.value === "claude_sonnet") return { ...opt, label: "Codex Balanced", hint: "fast Codex route" };
       if (opt.value === "claude_opus") return { ...opt, label: "Codex Heavy", hint: "heavy Codex route" };
       return opt;

@@ -92,7 +92,7 @@ export const useSession = create<SessionState>((set, get) => ({
     if (get().hydrated) return;
     const ap = readPersisted(ACTIVE_PROJECT_KEY, "default", (s) => s);
     const am = readPersisted<ChatModel>(ACTIVE_MODEL_KEY, "claude_sonnet", (s) =>
-      (["claude_sonnet", "claude_opus", "deepseek_v4"] as const).includes(s as ChatModel)
+      (["claude_sonnet", "claude_opus", "claude_fable", "deepseek_v4"] as const).includes(s as ChatModel)
         ? (s as ChatModel)
         : "claude_sonnet",
     );

@@ -89,6 +89,7 @@ KITTY_COST_CENTS: dict[str, int] = {
 CLAUDE_PRICING_USD = {
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-opus-4-8":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-opus-4-7":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-haiku-4-5":  {"input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_read": 0.10},
 }
@@ -426,7 +427,8 @@ def _estimate_chat(params: dict[str, Any]) -> CostEstimate:
     # Claude — apply markup
     claude_model = {
         "claude_sonnet": "claude-sonnet-4-6",
-        "claude_opus":   "claude-fable-5",  # heavy captain route = Fable 5
+        "claude_opus":   "claude-opus-4-8",  # heavy captain route = Opus 4.8
+        "claude_fable":  "claude-fable-5",   # premium Fable 5 route
         "claude_haiku":  "claude-haiku-4-5",
     }.get(model, "claude-sonnet-4-6")
     rates = CLAUDE_PRICING_USD[claude_model]
@@ -457,8 +459,8 @@ async def estimate_cost(action: str, params: dict[str, Any] | None = None) -> Co
         if action != "asset_gen":
             p.setdefault("asset_type", action)
         return _estimate_asset(p)
-    if action.startswith("chat") or action in ("deepseek_v4", "claude_sonnet", "claude_opus"):
-        if action in ("deepseek_v4", "claude_sonnet", "claude_opus"):
+    if action.startswith("chat") or action in ("deepseek_v4", "claude_sonnet", "claude_opus", "claude_fable"):
+        if action in ("deepseek_v4", "claude_sonnet", "claude_opus", "claude_fable"):
             p.setdefault("model", action)
         return _estimate_chat(p)
     if action == "build_game":
@@ -558,7 +560,8 @@ def get_pricing_table() -> list[PricingEntry]:
     # Chat models — per 1K input tokens (output usually ~30-50% of input cost)
     for model_key, claude_model in [
         ("claude_sonnet", "claude-sonnet-4-6"),
-        ("claude_opus", "claude-fable-5"),
+        ("claude_opus", "claude-opus-4-8"),
+        ("claude_fable", "claude-fable-5"),
         ("claude_haiku", "claude-haiku-4-5"),
     ]:
         rates = CLAUDE_PRICING_USD[claude_model]
