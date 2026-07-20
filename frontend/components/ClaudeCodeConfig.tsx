@@ -19,7 +19,16 @@ import {
   Brain, CheckCircle2, XCircle, FileText, ExternalLink, RefreshCw,
   Shield, FolderOpen, Cpu, Sparkles,
 } from "lucide-react";
-import { BACKEND, testEndpoint, updateConfig } from "@/lib/api";
+import { BACKEND, getConfig, testEndpoint, updateConfig } from "@/lib/api";
+
+/** Captain reasoning-effort levels (Claude CLI --effort). Order = burn rate. */
+const EFFORT_LEVELS = [
+  { id: "low", label: "Low", desc: "najtańszy — proste zadania" },
+  { id: "medium", label: "Medium", desc: "oszczędny balans" },
+  { id: "high", label: "High (default)", desc: "głębokie myślenie, rozsądny koszt" },
+  { id: "xhigh", label: "X-High", desc: "drogi — trudne problemy" },
+  { id: "max", label: "Max", desc: "najdroższy — pali tokeny" },
+] as const;
 
 interface ClaudeStatus {
   ok: boolean;
@@ -44,14 +53,22 @@ export default function ClaudeCodeConfig() {
       : "claude_sonnet"
   );
   const [busy, setBusy] = useState(false);
+  const [effort, setEffortState] = useState<string>("high");
+  const [savingEffort, setSavingEffort] = useState(false);
 
   async function refresh() {
     setBusy(true);
     try {
-      const [agentStatus, skills] = await Promise.all([
+      const [agentStatus, skills, cfg] = await Promise.all([
         testEndpoint("agent").catch(() => null),
         fetch(`${BACKEND}/api/chat/skills`).then((r) => r.json()).catch(() => []),
+        getConfig().catch(() => null),
       ]);
+      if (cfg) {
+        const f = cfg.fields.find((x) => x.key === "MURRKIT_CLAUDE_EFFORT");
+        const v = (f?.value || f?.default || "high").toLowerCase();
+        setEffortState(EFFORT_LEVELS.some((l) => l.id === v) ? v : "high");
+      }
       if (agentStatus) {
         setStatus({
           ok: agentStatus.ok,
@@ -97,6 +114,19 @@ export default function ClaudeCodeConfig() {
       }));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function setEffort(level: string) {
+    setSavingEffort(true);
+    const prev = effort;
+    setEffortState(level);
+    try {
+      await updateConfig({ MURRKIT_CLAUDE_EFFORT: level });
+    } catch {
+      setEffortState(prev); // save failed — revert so the UI never lies
+    } finally {
+      setSavingEffort(false);
     }
   }
 
@@ -146,6 +176,38 @@ export default function ClaudeCodeConfig() {
             ))}
           </div>
         </div>
+
+        {/* === Captain effort (token-burn control; Claude CLI --effort) === */}
+        {!isCodex && (
+          <div className="bg-bg-subtle border border-line rounded p-2.5">
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="flex items-center gap-1.5 text-text-dim">
+                <Sparkles className="h-3 w-3" /> Captain effort
+                {savingEffort && <RefreshCw className="h-3 w-3 animate-spin" />}
+              </span>
+              <span className="text-[9px] text-text-subtle">
+                kontrola zużycia tokenów (Fable/Opus/Sonnet)
+              </span>
+            </div>
+            <select
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              disabled={busy || savingEffort}
+              className="w-full bg-bg border border-line rounded px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent disabled:opacity-50"
+              title="Claude CLI --effort — wyższy poziom = głębsze myślenie i większe zużycie tokenów"
+            >
+              {EFFORT_LEVELS.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label} — {l.desc}
+                </option>
+              ))}
+            </select>
+            <div className="text-[9px] text-text-subtle mt-1">
+              Default: <b>High</b>. Zapis do .env działa od NASTĘPNEJ tury — bez restartu.
+              Budżet myślenia: Settings → <code>MURRKIT_THINKING_TOKENS</code>.
+            </div>
+          </div>
+        )}
 
         {/* === CLI Status === */}
         <div className="grid grid-cols-2 gap-3">

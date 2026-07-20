@@ -152,6 +152,8 @@ Everything lives in `.env` (copied from `.env.example`, never committed). You ca
 | `MURRKIT_AGENT_CLI` | Local captain runtime: `claude` or `codex` | default `claude` | Setup screen |
 | `CLAUDE_CLI_BIN` | Claude Code binary path/name | optional | default `claude` |
 | `ANTHROPIC_API_KEY` | Bill the Claude captain via the Anthropic API instead of your subscription (needed when the pinned captain model isn't included in your plan) | optional | [platform.claude.com](https://platform.claude.com) |
+| `MURRKIT_CLAUDE_EFFORT` | Captain reasoning effort (`low`/`medium`/`high`/`xhigh`/`max`) — token-burn control, esp. on Fable 5 | default `high` | Settings → Local Agent |
+| `MURRKIT_THINKING_TOKENS` | Captain extended-thinking budget per turn | default `32000` | Settings |
 | `CODEX_CLI_BIN` | Codex CLI binary path/name | optional | default `codex` |
 | `CODEX_MODEL_FAST` | Codex model for the Balanced route | optional | blank = Codex default |
 | `CODEX_MODEL_HEAVY` | Codex model for the Heavy route | optional | blank = Codex default |

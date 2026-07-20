@@ -1324,15 +1324,40 @@ def _codex_playtest_mcp_config_args() -> list[str]:
     ]
 
 
+_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+_CLAUDE_EFFORT_DEFAULT = "high"
+_THINKING_TOKENS_DEFAULT = 32000
+
+
+def _claude_effort() -> str:
+    """Captain reasoning-effort level, user-controllable via Settings
+    (`MURRKIT_CLAUDE_EFFORT` in .env; read live per turn — no restart).
+
+    Passed to the CLI as `--effort`. Matters most on Fable 5, whose adaptive
+    thinking at max effort burns dramatically more tokens; the default is
+    deliberately "high", NOT "max" — max is an explicit user opt-in."""
+    level = _env_value("MURRKIT_CLAUDE_EFFORT", _CLAUDE_EFFORT_DEFAULT).strip().lower()
+    return level if level in _CLAUDE_EFFORT_LEVELS else _CLAUDE_EFFORT_DEFAULT
+
+
+def _thinking_tokens() -> int:
+    """Captain extended-thinking budget (MAX_THINKING_TOKENS), user-controllable
+    via Settings (`MURRKIT_THINKING_TOKENS` in .env). Clamped to a sane range."""
+    raw = _env_value("MURRKIT_THINKING_TOKENS", str(_THINKING_TOKENS_DEFAULT))
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _THINKING_TOKENS_DEFAULT
+    return max(1024, min(val, 128_000))
+
+
 def _cli_env() -> dict[str, str]:
-    """Environment for the inner Claude CLI subprocess. Enables MAX-effort
-    extended thinking — the user wants deep reasoning + imagination and has
-    explicitly authorized heavy token use ("może palić tokeny jak oszalały").
-    `MAX_THINKING_TOKENS` sets the Claude Code thinking budget; an externally
-    provided value is respected, otherwise we default high so the inner Claude
-    reasons deeply instead of answering minimally."""
+    """Environment for the inner Claude CLI subprocess. The thinking budget is
+    user-controllable (Settings → MURRKIT_THINKING_TOKENS, default 32000 —
+    deep reasoning + imagination); an externally provided MAX_THINKING_TOKENS
+    is respected."""
     env = os.environ.copy()
-    env.setdefault("MAX_THINKING_TOKENS", "32000")
+    env.setdefault("MAX_THINKING_TOKENS", str(_thinking_tokens()))
     # API billing path: when ANTHROPIC_API_KEY is set (Settings → Local Agent,
     # stored in .env), pass it to the CLI subprocess so the captain runs on
     # API billing instead of the subscription. Required once a pinned model
@@ -1714,6 +1739,7 @@ async def _run_claude_cli(
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
         "--model", model_choice,
+        "--effort", _claude_effort(),
     ]
     # Browser MCP so the inner Claude can actually play/test the game.
     cmd += _maybe_playtest_mcp_args()
@@ -2070,6 +2096,7 @@ async def _stream_claude_cli(
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--model", model_choice,
+        "--effort", _claude_effort(),
     ]
     # Browser MCP so the inner Claude can actually play/test the game.
     cmd += _maybe_playtest_mcp_args()
