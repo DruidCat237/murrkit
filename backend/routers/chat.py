@@ -63,12 +63,27 @@ from core.config import PROJECT_ROOT, budget, settings
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 # Backstop: kill a captain turn that produces no output at all for this long.
-# Real turns stream tool_use / thought / token events continuously; total
-# silence past this window means the CLI is wedged (dead MCP handshake, stuck
-# network) and would otherwise hang the dashboard AND the autoplay loop forever.
-# Comfortably longer than the frontend's 240s watchdog so the visible case is
-# handled client-side first; this is the server-side safety net.
-_CLI_IDLE_TIMEOUT_S = 300.0
+# Real turns stream tool_use / thought / token events, BUT a single long tool
+# execution (17-sheet audit, long Bash, image-gen poll) can legitimately hold
+# stdout silent for many minutes — especially on Fable 5 doing big tasks. So
+# the default is generous (15 min) and user-tunable via .env
+# (MURRKIT_CLI_IDLE_TIMEOUT_S, read live per turn). True wedges (dead MCP
+# handshake, stuck network) still get reaped, just later. The dashboard no
+# longer needs a tight client-side cutoff: the WS sends a `ping` heartbeat
+# every 20s, so the frontend watchdog only fires when the connection is
+# actually dead — not merely quiet.
+_CLI_IDLE_TIMEOUT_DEFAULT_S = 900.0
+_WS_HEARTBEAT_INTERVAL_S = 20.0
+
+
+def _cli_idle_timeout() -> float:
+    """Server-side CLI silence backstop, .env-tunable (clamped 120s..3600s)."""
+    raw = _env_value("MURRKIT_CLI_IDLE_TIMEOUT_S", str(int(_CLI_IDLE_TIMEOUT_DEFAULT_S)))
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _CLI_IDLE_TIMEOUT_DEFAULT_S
+    return max(120.0, min(val, 3600.0))
 
 
 def _ws_origin_ok(ws: WebSocket) -> bool:
@@ -495,47 +510,72 @@ async def chat_stream(ws: WebSocket) -> None:
         task = _Task(task_id=task_id, kind=model)
         _tasks[task_id] = task
 
-        await ws.send_text(json.dumps({"kind": "started", "task_id": task_id, "model": model}))
+        # Serialize ALL frame writes: the heartbeat task below and the chunk
+        # relay would otherwise interleave concurrent ws.send_text calls.
+        send_lock = asyncio.Lock()
 
-        if model == "deepseek_v4":
-            async for chunk in _stream_deepseek(user_text, attachments):
-                if task.abort_event.is_set():
-                    await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
-                    break
-                await ws.send_text(json.dumps(chunk))
-                if chunk.get("kind") == "final":
-                    final_text = chunk.get("text") or final_text
-                    cost_usd = chunk.get("cost_usd", 0.0)
-                    got_final = True
-                elif chunk.get("kind") == "token":
-                    final_text += chunk.get("text", "")
-        elif model in ("claude_sonnet", "claude_opus", "claude_fable"):
-            model_choice = _resolve_model_choice(model)
-            async for chunk in _stream_claude_cli(
-                user_text,
-                attachments=attachments,
-                model_choice=model_choice,
-                abort_event=task.abort_event,
-                task=task,
-                project_name=project_name,
-            ):
-                if task.abort_event.is_set():
-                    await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
-                    break
-                await ws.send_text(json.dumps(chunk))
-                kind = chunk.get("kind")
-                if kind == "final":
-                    # `final` carries the authoritative complete text; fall back
-                    # to accumulated tokens if it's empty.
-                    final_text = chunk.get("text") or final_text
-                    cost_usd = chunk.get("cost_usd", 0.0)
-                    got_final = True
-                elif kind == "token":
-                    # Accumulate streamed text so an interrupted turn (client
-                    # refresh / disconnect) still has a partial response to save.
-                    final_text += chunk.get("text", "")
-        else:
-            await ws.send_text(json.dumps({"kind": "error", "error": f"Unknown model {model!r}"}))
+        async def _send(payload: dict[str, Any]) -> None:
+            async with send_lock:
+                await ws.send_text(json.dumps(payload))
+
+        # Liveness heartbeat: a `ping` every 20s for as long as the turn runs.
+        # Long single-tool executions (Fable auditing 17 sheets, long playtests)
+        # legitimately produce minutes of stream silence — the pings tell the
+        # dashboard "still alive, keep waiting", so its idle watchdog only
+        # fires when the backend is actually gone.
+        async def _heartbeat() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(_WS_HEARTBEAT_INTERVAL_S)
+                    await _send({"kind": "ping", "ts": time.time()})
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                return  # socket closed / turn over — heartbeat just stops
+
+        await _send({"kind": "started", "task_id": task_id, "model": model})
+        heartbeat_task = asyncio.create_task(_heartbeat())
+
+        try:
+            if model == "deepseek_v4":
+                async for chunk in _stream_deepseek(user_text, attachments):
+                    if task.abort_event.is_set():
+                        await _send({"kind": "aborted", "reason": "user"})
+                        break
+                    await _send(chunk)
+                    if chunk.get("kind") == "final":
+                        final_text = chunk.get("text") or final_text
+                        cost_usd = chunk.get("cost_usd", 0.0)
+                        got_final = True
+                    elif chunk.get("kind") == "token":
+                        final_text += chunk.get("text", "")
+            elif model in ("claude_sonnet", "claude_opus", "claude_fable"):
+                model_choice = _resolve_model_choice(model)
+                async for chunk in _stream_claude_cli(
+                    user_text,
+                    attachments=attachments,
+                    model_choice=model_choice,
+                    abort_event=task.abort_event,
+                    task=task,
+                    project_name=project_name,
+                ):
+                    if task.abort_event.is_set():
+                        await _send({"kind": "aborted", "reason": "user"})
+                        break
+                    await _send(chunk)
+                    kind = chunk.get("kind")
+                    if kind == "final":
+                        # `final` carries the authoritative complete text; fall back
+                        # to accumulated tokens if it's empty.
+                        final_text = chunk.get("text") or final_text
+                        cost_usd = chunk.get("cost_usd", 0.0)
+                        got_final = True
+                    elif kind == "token":
+                        # Accumulate streamed text so an interrupted turn (client
+                        # refresh / disconnect) still has a partial response to save.
+                        final_text += chunk.get("text", "")
+            else:
+                await _send({"kind": "error", "error": f"Unknown model {model!r}"})
+        finally:
+            heartbeat_task.cancel()
 
     except WebSocketDisconnect:
         logger.info("Chat WS disconnected (task={t})", t=task_id)
@@ -2221,11 +2261,12 @@ async def _stream_claude_cli(
 
     watcher_task = asyncio.create_task(_watcher())
 
+    idle_timeout_s = _cli_idle_timeout()
     try:
         while True:
             try:
                 line_b = await asyncio.wait_for(
-                    line_queue.get(), timeout=_CLI_IDLE_TIMEOUT_S
+                    line_queue.get(), timeout=idle_timeout_s
                 )
             except asyncio.TimeoutError:
                 # No output at all for the whole window — the CLI is wedged.
@@ -2235,7 +2276,7 @@ async def _stream_claude_cli(
                 logger.warning(
                     "Claude CLI stream idle >{s}s — terminating wedged turn "
                     "(got {n} chars so far). stderr tail: {e}",
-                    s=_CLI_IDLE_TIMEOUT_S, n=len(full_text),
+                    s=idle_timeout_s, n=len(full_text),
                     e=" | ".join(list(stderr_tail)[-3:]) or "(none)",
                 )
                 if proc.poll() is None:
@@ -2247,7 +2288,7 @@ async def _stream_claude_cli(
                     "kind": "warning",
                     "level": "cli_timeout",
                     "text": (
-                        f"Captain went silent for {int(_CLI_IDLE_TIMEOUT_S)}s — "
+                        f"Captain went silent for {int(idle_timeout_s)}s — "
                         "turn terminated. Resend to continue."
                     ),
                 }

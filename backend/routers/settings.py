@@ -60,6 +60,7 @@ _SAFE_KEY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "ANTHROPIC_API_KEY":   {"label": "Anthropic API Key (only when MURRKIT_AGENT_CLI=claude)", "kind": "secret", "default": ""},
     "MURRKIT_CLAUDE_EFFORT": {"label": "Captain effort (low/medium/high/xhigh/max — token burn control)", "kind": "plain", "default": "high"},
     "MURRKIT_THINKING_TOKENS": {"label": "Captain thinking budget (tokens per turn)", "kind": "number", "default": "32000"},
+    "MURRKIT_CLI_IDLE_TIMEOUT_S": {"label": "Captain silence backstop (seconds; big Fable turns need headroom)", "kind": "number", "default": "900"},
     "UNITY_PROJECT_PATH":  {"label": "Game Project Path", "kind": "path", "default": ""},
     "UNITY_MCP_SERVER":    {"label": "Engine-MCP Server Script Path (stdio)", "kind": "path", "default": ""},
     "UNITY_MCP_HTTP_URL":  {"label": "Engine-MCP HTTP URL (alt transport)", "kind": "plain", "default": DEFAULT_UNITY_MCP_HTTP_URL},

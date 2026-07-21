@@ -119,6 +119,10 @@ export interface CostSnapshot {
 
 export type ChatStreamEvent =
   | { kind: "started"; task_id: string; model: string }
+  /** Backend liveness heartbeat (every ~20s while the turn runs). Carries no
+   *  content — its only job is resetting the client idle watchdog during long
+   *  silent tool executions (big Fable turns, playtests). */
+  | { kind: "ping"; ts: number }
   | { kind: "token"; text: string }
   | { kind: "thought"; text: string }
   | { kind: "tool_use"; id: string; name: string; args_summary: string }

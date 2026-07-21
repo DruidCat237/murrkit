@@ -517,9 +517,10 @@ export default function ChatPanel({
       },
       (evt) => {
         // DESIGNER MODE REFORM — reset idle watchdog on EVERY incoming event.
-        // Any progress signal (token / tool_use / tool_result / system) tells
-        // the watchdog the stream is still alive.
+        // Any progress signal (token / tool_use / tool_result / system / ping)
+        // tells the watchdog the stream is still alive.
         lastEventTimeRef.current = Date.now();
+        if (evt.kind === "ping") return; // liveness heartbeat only — no content
         if (evt.kind === "token") {
           partialTextRef.current += evt.text;
           setMsgs((prev) => {
