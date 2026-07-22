@@ -101,6 +101,12 @@ let connected = false;
 const children = [];
 
 // --- Server lifecycle -------------------------------------------------------
+// Set on intentional shutdown so the auto-restart handler below does NOT
+// resurrect servers we killed on purpose (app quit / window close).
+let quitting = false;
+// Per-label consecutive-crash counter for restart backoff.
+const restartCounts = {};
+
 function spawnServer(label, command, cwd) {
   let stdio = "ignore";
   try {
@@ -111,6 +117,7 @@ function spawnServer(label, command, cwd) {
     stdio = "ignore";
   }
   try {
+    const startedAt = Date.now();
     const child = spawn(command, {
       cwd,
       shell: true, // needed so `uv` / `npm` resolve via the shell (.cmd shims on Windows)
@@ -119,6 +126,26 @@ function spawnServer(label, command, cwd) {
       env: { ...process.env },
     });
     child.on("error", (e) => console.error(`[${label}] spawn error:`, e.message));
+    // SELF-HEAL: if a server dies unexpectedly (crash, OOM on a huge captain
+    // turn, external kill, machine sleep), bring it back automatically instead
+    // of leaving the user with a dead backend. The frontend reconnects to the
+    // fresh backend on its own, so the window is left untouched.
+    child.on("exit", (code, signal) => {
+      const idx = children.findIndex((c) => c.child === child);
+      if (idx !== -1) children.splice(idx, 1);
+      if (quitting) return; // intentional shutdown — stay dead
+      // A run that lived a healthy while and then died is a one-off, not a
+      // crash loop — reset the backoff so it restarts promptly.
+      if (Date.now() - startedAt > 60000) restartCounts[label] = 0;
+      restartCounts[label] = (restartCounts[label] || 0) + 1;
+      const delay = Math.min(2500 * restartCounts[label], 15000);
+      console.warn(
+        `[${label}] exited (code=${code} signal=${signal}) — auto-restart #${restartCounts[label]} in ${delay}ms`
+      );
+      setTimeout(() => {
+        if (!quitting) spawnServer(label, command, cwd);
+      }, delay);
+    });
     children.push({ label, child });
     console.log(`[${label}] started in ${cwd}`);
   } catch (e) {
@@ -154,6 +181,7 @@ async function maybeStartServers() {
 }
 
 function killServers() {
+  quitting = true; // stop the exit handler from resurrecting these
   for (const { label, child } of children) {
     try {
       if (process.platform === "win32" && child.pid) {
