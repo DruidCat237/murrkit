@@ -2780,7 +2780,9 @@ def _check_cost_guard(guard: _StreamGuard, total_cost: float) -> dict[str, Any] 
         "level": "cost",
         "text": (
             f"⚠ Ten turn już kosztował ${total_cost:.2f} (próg ${_COST_WARN_THRESHOLD_USD:.2f}). "
-            f"Sprawdź czy Opus nie utknął w pętli — możesz kliknąć STOP."
+            f"Sprawdź czy kapitan nie utknął w pętli — możesz kliknąć STOP. "
+            f"(Uwaga: przy metered API jak Kimi K3 kilka $ na rundę bywa normalne; "
+            f"prawdziwe zużycie sprawdzisz w billingu dostawcy.)"
         ),
     }
 
