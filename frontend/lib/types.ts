@@ -85,7 +85,7 @@ export type WsEvent =
 
 // ---- Chat --------------------------------------------------------------------
 
-export type ChatModel = "deepseek_v4" | "claude_sonnet" | "claude_opus" | "claude_fable";
+export type ChatModel = "deepseek_v4" | "claude_sonnet" | "claude_opus" | "claude_fable" | "kimi_k3";
 
 export interface ChatAttachment {
   filename: string;

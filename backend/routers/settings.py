@@ -48,6 +48,11 @@ _SAFE_KEY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "DEEPSEEK_MODEL":      {"label": "DeepSeek Model", "kind": "plain", "default": "deepseek-v4-flash"},
     "GEMINI_API_KEY":      {"label": "Google Gemini API Key", "kind": "secret", "default": ""},
     "GEMINI_MODEL":        {"label": "Gemini Model", "kind": "plain", "default": "gemini-3.5-flash"},
+    # Kimi K3 captain (Moonshot Anthropic-compatible endpoint; runs through
+    # the Claude Code CLI — see chat.py _cli_env_kimi()).
+    "KIMI_API_KEY":          {"label": "Kimi K3 API Key (Moonshot)", "kind": "secret", "default": ""},
+    "KIMI_MODEL":            {"label": "Kimi Model", "kind": "plain", "default": "kimi-k3[1m]"},
+    "KIMI_REASONING_EFFORT": {"label": "Kimi Reasoning Effort (low | high | max)", "kind": "plain", "default": "max"},
     "ELEVENLABS_API_KEY":  {"label": "ElevenLabs API Key", "kind": "secret", "default": ""},
     "MURRKIT_AGENT_CLI":   {"label": "Local agent CLI", "kind": "plain", "default": "claude"},
     "CODEX_CLI_BIN":       {"label": "Codex CLI binary", "kind": "plain", "default": "codex"},

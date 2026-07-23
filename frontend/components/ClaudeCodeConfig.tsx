@@ -23,11 +23,11 @@ import { BACKEND, getConfig, testEndpoint, updateConfig } from "@/lib/api";
 
 /** Captain reasoning-effort levels (Claude CLI --effort). Order = burn rate. */
 const EFFORT_LEVELS = [
-  { id: "low", label: "Low", desc: "najtańszy — proste zadania" },
-  { id: "medium", label: "Medium", desc: "oszczędny balans" },
-  { id: "high", label: "High (default)", desc: "głębokie myślenie, rozsądny koszt" },
-  { id: "xhigh", label: "X-High", desc: "drogi — trudne problemy" },
-  { id: "max", label: "Max", desc: "najdroższy — pali tokeny" },
+  { id: "low", label: "Low", desc: "cheapest — simple tasks" },
+  { id: "medium", label: "Medium", desc: "economical balance" },
+  { id: "high", label: "High (default)", desc: "deep thinking, reasonable cost" },
+  { id: "xhigh", label: "X-High", desc: "expensive — hard problems" },
+  { id: "max", label: "Max", desc: "most expensive — burns tokens" },
 ] as const;
 
 interface ClaudeStatus {
@@ -272,6 +272,11 @@ export default function ClaudeCodeConfig() {
                 id: "claude_fable",
                 label: "Fable 5",
                 desc: "Premium · credits ($10/$50 MTok)",
+              },
+              {
+                id: "kimi_k3",
+                label: "Kimi K3",
+                desc: "Moonshot · 1M ctx ($3/$15 MTok)",
               },
               { id: "deepseek_v4", label: "DeepSeek V4", desc: "Cheap fallback" },
             ] as const)

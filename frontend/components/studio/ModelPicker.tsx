@@ -22,6 +22,7 @@ const OPTIONS: { value: ChatModel; label: string; hint: string }[] = [
   { value: "claude_sonnet", label: "Sonnet", hint: "Fast · balanced" },
   { value: "claude_opus", label: "Opus 4.8", hint: "Default · best reasoning" },
   { value: "claude_fable", label: "Fable 5", hint: "Premium · credits ($10/$50 MTok)" },
+  { value: "kimi_k3", label: "Kimi K3", hint: "Moonshot · 1M ctx ($3/$15 MTok)" },
 ];
 
 function optionsForAgent(agentCli: "claude" | "codex") {

@@ -429,6 +429,15 @@ async def send_chat(req: ChatSendRequest) -> ChatSendResponse:
 
     if req.model == "deepseek_v4":
         text, cost = await _run_deepseek(user_text, attachments=req.attachments)
+    elif req.model == "kimi_k3":
+        # One-shot /send is the legacy non-stream path; Kimi runs through the
+        # streaming WS (and /loop). Point the caller there instead of silently
+        # spawning a differently-configured captain.
+        text, cost = (
+            "[Kimi K3 is available in the streaming chat and /loop — use the "
+            "chat panel (WS /api/chat/stream) instead of /send.]",
+            0.0,
+        )
     elif req.model in ("claude_sonnet", "claude_opus", "claude_fable"):
         model_choice = _resolve_model_choice(req.model)
         text, cost = await _run_claude_cli(
@@ -547,6 +556,37 @@ async def chat_stream(ws: WebSocket) -> None:
                         got_final = True
                     elif chunk.get("kind") == "token":
                         final_text += chunk.get("text", "")
+            elif model == "kimi_k3":
+                # Kimi K3 captain: same Claude Code CLI against Moonshot's
+                # Anthropic-compatible endpoint, own session namespace.
+                # Fail loud without a key — a keyless spawn would just burn
+                # a confusing 401 turn.
+                if not _kimi_api_key():
+                    final_text = "[Kimi K3: set KIMI_API_KEY in Settings first.]"
+                    got_final = True
+                    await _send({"kind": "final", "text": final_text, "cost_usd": 0.0})
+                else:
+                    async for chunk in _stream_claude_cli(
+                        user_text,
+                        attachments=attachments,
+                        model_choice=_kimi_model(),
+                        abort_event=task.abort_event,
+                        task=task,
+                        project_name=project_name,
+                        cli_env=_cli_env_kimi(),
+                        session_ns="kimi",
+                    ):
+                        if task.abort_event.is_set():
+                            await _send({"kind": "aborted", "reason": "user"})
+                            break
+                        await _send(chunk)
+                        kind = chunk.get("kind")
+                        if kind == "final":
+                            final_text = chunk.get("text") or final_text
+                            cost_usd = chunk.get("cost_usd", 0.0)
+                            got_final = True
+                        elif kind == "token":
+                            final_text += chunk.get("text", "")
             elif model in ("claude_sonnet", "claude_opus", "claude_fable"):
                 model_choice = _resolve_model_choice(model)
                 async for chunk in _stream_claude_cli(
@@ -900,7 +940,18 @@ async def chat_loop(ws: WebSocket) -> None:
             return
 
         # Heavy route, same as autoplay — the loop is the captain working.
-        model_choice = _resolve_model_choice("claude_opus")
+        # Optional req "model": "kimi_k3" runs the loop on the Kimi K3 captain
+        # (same CLI, Moonshot Anthropic-compatible endpoint, own sessions).
+        loop_kimi = (req.get("model") or "") == "kimi_k3"
+        if loop_kimi and not _kimi_api_key():
+            await ws.send_text(json.dumps({
+                "kind": "error",
+                "error": "Kimi K3: set KIMI_API_KEY in Settings first.",
+            }))
+            return
+        model_choice = _kimi_model() if loop_kimi else _resolve_model_choice("claude_opus")
+        loop_cli_env = _cli_env_kimi() if loop_kimi else None
+        loop_session_ns = "kimi" if loop_kimi else "claude"
         task = _Task(task_id=task_id, kind="claude_cli")
         _tasks[task_id] = task
 
@@ -943,6 +994,8 @@ async def chat_loop(ws: WebSocket) -> None:
                 abort_event=task.abort_event,
                 task=task,
                 project_name=cfg.project_name,
+                cli_env=loop_cli_env,
+                session_ns=loop_session_ns,
             ):
                 if task.abort_event.is_set():
                     await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
@@ -1217,6 +1270,69 @@ def _claude_fable_model() -> str:
 def _claude_fast_model() -> str:
     """Resolved --model for the light captain route (the 'sonnet' button)."""
     return _env_value("MURRKIT_CLAUDE_FAST_MODEL", _CLAUDE_SONNET_MODEL_DEFAULT) or _CLAUDE_SONNET_MODEL_DEFAULT
+
+
+# ---- Kimi K3 captain route (Moonshot Anthropic-compatible endpoint) ---------
+#
+# Kimi K3 runs as a FULL agentic captain through the same Claude Code CLI,
+# pointed at Moonshot's official Anthropic-compatible surface. Recipe from
+# platform.kimi.ai/docs/guide/claude-code-kimi (verified 2026-07-22):
+#   ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic
+#   ANTHROPIC_AUTH_TOKEN=<Kimi API key>            (NOT ANTHROPIC_API_KEY)
+#   ANTHROPIC_MODEL + all ANTHROPIC_DEFAULT_*_MODEL + CLAUDE_CODE_SUBAGENT_MODEL
+#     = the chosen model (primary: kimi-k3[1m], 1M context)
+#   ENABLE_TOOL_SEARCH=false                        (endpoint lacks support)
+#   CLAUDE_CODE_AUTO_COMPACT_WINDOW=1048576         (use the full 1M window)
+#   CLAUDE_CODE_EFFORT_LEVEL=<low|high|max>         (K3 reasoning_effort; EN)
+# Sessions are namespaced "kimi:<project>" so they never mix with the Claude
+# captain's sessions. Available regardless of MURRKIT_AGENT_CLI (claude/codex)
+# — it always spawns the Claude Code CLI binary.
+
+_KIMI_BASE_URL_DEFAULT = "https://api.moonshot.ai/anthropic"
+_KIMI_MODEL_DEFAULT = "kimi-k3[1m]"
+# K3's reasoning_effort accepts exactly these ENGLISH values (docs: default max).
+_KIMI_EFFORT_LEVELS = ("low", "high", "max")
+_KIMI_EFFORT_DEFAULT = "max"
+
+
+def _kimi_api_key() -> str:
+    return _env_value("KIMI_API_KEY", "")
+
+
+def _kimi_model() -> str:
+    return _env_value("KIMI_MODEL", _KIMI_MODEL_DEFAULT) or _KIMI_MODEL_DEFAULT
+
+
+def _kimi_effort() -> str:
+    """K3 reasoning effort — Settings-controlled (KIMI_REASONING_EFFORT),
+    English values only, live-read per turn like _claude_effort()."""
+    level = (_env_value("KIMI_REASONING_EFFORT", _KIMI_EFFORT_DEFAULT) or "").strip().lower()
+    return level if level in _KIMI_EFFORT_LEVELS else _KIMI_EFFORT_DEFAULT
+
+
+def _cli_env_kimi() -> dict[str, str]:
+    """CLI environment for the Kimi K3 captain (see recipe above)."""
+    env = _cli_env()
+    # A configured Anthropic key would shadow the Kimi auth token — drop it.
+    env.pop("ANTHROPIC_API_KEY", None)
+    model = _kimi_model()
+    env["ANTHROPIC_BASE_URL"] = (
+        _env_value("KIMI_ANTHROPIC_BASE_URL", _KIMI_BASE_URL_DEFAULT) or _KIMI_BASE_URL_DEFAULT
+    )
+    env["ANTHROPIC_AUTH_TOKEN"] = _kimi_api_key()
+    for key in (
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ):
+        env[key] = model
+    env["ENABLE_TOOL_SEARCH"] = "false"
+    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "1048576"
+    env["CLAUDE_CODE_EFFORT_LEVEL"] = _kimi_effort()
+    return env
 
 
 def _env_value(key: str, default: str = "") -> str:
@@ -2098,13 +2214,20 @@ async def _stream_claude_cli(
     abort_event: asyncio.Event | None = None,
     task: _Task | None = None,
     project_name: str | None = None,
+    cli_env: dict[str, str] | None = None,
+    session_ns: str = "claude",
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Stream Claude CLI events via --output-format=stream-json.
 
     Emits: started → (thought | tool_use | tool_result | token)* → final
+
+    `cli_env` overrides the subprocess environment (Kimi K3 runs the SAME CLI
+    against Moonshot's Anthropic-compatible endpoint via _cli_env_kimi());
+    `session_ns` namespaces the persisted session id ("claude" keeps the
+    legacy raw-project key, "kimi" stores under "kimi:<project>").
     """
-    if _agent_cli_kind() == "codex":
+    if _agent_cli_kind() == "codex" and session_ns == "claude":
         async for chunk in _stream_codex_cli(
             user_text,
             attachments=attachments,
@@ -2136,14 +2259,18 @@ async def _stream_claude_cli(
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--model", model_choice,
-        "--effort", _claude_effort(),
+        "--effort", _kimi_effort() if session_ns == "kimi" else _claude_effort(),
     ]
     # Browser MCP so the inner Claude can actually play/test the game.
     cmd += _maybe_playtest_mcp_args()
     # Per-project conversation continuity — resume the prior session if we
     # captured one. The chat keeps its full history this way instead of
-    # treating every turn as a brand-new context.
-    prior_session = _session_by_project.get(project_name or "default") if project_name else None
+    # treating every turn as a brand-new context. Kimi sessions live under
+    # their own namespace so the two captains never cross-resume.
+    prior_session = (
+        _session_by_project.get(_session_storage_key(project_name, session_ns))
+        if project_name else None
+    )
     if prior_session:
         cmd += ["--resume", prior_session]
     # CRITICAL: do NOT append `prompt` as a positional argv element. The
@@ -2165,7 +2292,7 @@ async def _stream_claude_cli(
             stderr=subprocess.PIPE,
             stdin=subprocess.PIPE,
             bufsize=1,  # line-buffered
-            env=_cli_env(),  # MAX-effort extended thinking
+            env=cli_env if cli_env is not None else _cli_env(),
         )
     except (OSError, FileNotFoundError) as e:
         yield {
@@ -2315,7 +2442,7 @@ async def _stream_claude_cli(
                 # Remember per-project so the next turn uses --resume; persist
                 # to disk so the resume survives a backend restart.
                 if sid and project_name:
-                    _remember_agent_session(project_name, "claude", sid)
+                    _remember_agent_session(project_name, session_ns, sid)
                 yield {
                     "kind": "system",
                     "subtype": evt.get("subtype", ""),
@@ -2495,7 +2622,7 @@ async def _stream_claude_cli(
             "Claude CLI resume produced no output (exit {rc}) — dropping session {sid} and retrying fresh",
             rc=proc.returncode, sid=prior_session,
         )
-        _forget_agent_session(project_name, "claude")
+        _forget_agent_session(project_name, session_ns)
         yield {
             "kind": "system",
             "subtype": "session_reset",
@@ -2508,6 +2635,8 @@ async def _stream_claude_cli(
             abort_event=abort_event,
             task=task,
             project_name=project_name,
+            cli_env=cli_env,
+            session_ns=session_ns,
         ):
             yield chunk
         return

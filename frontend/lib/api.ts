@@ -477,6 +477,8 @@ export function openLoopStream(
     prompt: string;
     max_iters?: number;
     budget_usd?: number;
+    /** "kimi_k3" runs the loop on the Kimi captain; omit for heavy Claude. */
+    model?: "kimi_k3";
   },
   onEvent: (e: LoopStreamEvent) => void,
   onClose?: () => void

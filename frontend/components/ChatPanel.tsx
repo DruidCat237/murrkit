@@ -77,6 +77,9 @@ const MODEL_OPTIONS: { value: ChatModel; label: string; hint: string; tint: stri
   { value: "claude_sonnet", label: "Claude Sonnet",  hint: "fast default route",    tint: "text-accent" },
   { value: "claude_opus",   label: "Opus 4.8",       hint: "default orchestrator", tint: "text-accent-hot" },
   { value: "claude_fable",  label: "Fable 5",        hint: "premium · $10/$50 MTok · credits", tint: "text-purple-400" },
+  // Kimi K3 captain: Claude Code CLI → Moonshot Anthropic-compatible endpoint
+  // (KIMI_API_KEY in Settings). Available under BOTH claude and codex CLI modes.
+  { value: "kimi_k3",       label: "Kimi K3",        hint: "Moonshot · 1M ctx · $3/$15 MTok", tint: "text-emerald-400" },
 ];
 
 function modelOptionsForAgent(agentCli: "claude" | "codex") {
@@ -677,6 +680,9 @@ export default function ChatPanel({
         prompt,
         max_iters: maxIters,
         budget_usd: budgetUsd,
+        // Loop runs on the currently selected captain: Kimi K3 when the
+        // picker says so, otherwise the backend's heavy Claude route.
+        model: model === "kimi_k3" ? "kimi_k3" : undefined,
       },
       (evt) => {
         lastEventTimeRef.current = Date.now();
