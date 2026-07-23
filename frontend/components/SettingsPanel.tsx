@@ -33,6 +33,14 @@ const FIELD_OVERRIDES: Record<string, { label?: string; help?: string }> = {
     label: "Kitty App code",
     help: "Paste your Kitty App code from druidcat.app/dashboard — used for every image generation.",
   },
+  KIMI_API_KEY: {
+    label: "Kimi K3 API Key",
+    help: "Moonshot API key from platform.kimi.ai. Runs the captain (chat + /loop) via the Anthropic-compatible endpoint. Pick 'Kimi K3' in the model picker to use it.",
+  },
+  KIMI_REASONING_EFFORT: {
+    label: "Kimi reasoning effort",
+    help: "low | high | max (English). K3's reasoning_effort. Read live per turn — no restart.",
+  },
 };
 
 const SECTIONS: { title: string; keys: string[] }[] = [
@@ -47,6 +55,10 @@ const SECTIONS: { title: string; keys: string[] }[] = [
   {
     title: "Google Gemini (Vision QA)",
     keys: ["GEMINI_API_KEY", "GEMINI_MODEL"],
+  },
+  {
+    title: "Kimi K3 (Moonshot captain)",
+    keys: ["KIMI_API_KEY", "KIMI_MODEL", "KIMI_REASONING_EFFORT"],
   },
   {
     title: "ElevenLabs (Audio)",
