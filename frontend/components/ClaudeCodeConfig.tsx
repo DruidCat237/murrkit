@@ -265,7 +265,7 @@ export default function ClaudeCodeConfig() {
               },
               {
                 id: "claude_opus",
-                label: isCodex ? "Codex Heavy" : "Opus 4.8",
+                label: isCodex ? "Codex Heavy" : "Opus 5",
                 desc: isCodex ? "CODEX_MODEL_HEAVY or default" : "Most capable Claude route",
               },
               {

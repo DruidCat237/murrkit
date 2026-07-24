@@ -89,6 +89,9 @@ KITTY_COST_CENTS: dict[str, int] = {
 CLAUDE_PRICING_USD = {
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    # Opus 5 inherits the Opus-tier rate card (same as 4.8) until Anthropic
+    # publishes different numbers — update here if they diverge.
+    "claude-opus-5":     {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-opus-4-8":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-opus-4-7":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
     "claude-haiku-4-5":  {"input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_read": 0.10},
@@ -427,7 +430,7 @@ def _estimate_chat(params: dict[str, Any]) -> CostEstimate:
     # Claude — apply markup
     claude_model = {
         "claude_sonnet": "claude-sonnet-4-6",
-        "claude_opus":   "claude-opus-4-8",  # heavy captain route = Opus 4.8
+        "claude_opus":   "claude-opus-5",  # heavy captain route = Opus 5
         "claude_fable":  "claude-fable-5",   # premium Fable 5 route
         "claude_haiku":  "claude-haiku-4-5",
     }.get(model, "claude-sonnet-4-6")
@@ -560,7 +563,7 @@ def get_pricing_table() -> list[PricingEntry]:
     # Chat models — per 1K input tokens (output usually ~30-50% of input cost)
     for model_key, claude_model in [
         ("claude_sonnet", "claude-sonnet-4-6"),
-        ("claude_opus", "claude-opus-4-8"),
+        ("claude_opus", "claude-opus-5"),
         ("claude_fable", "claude-fable-5"),
         ("claude_haiku", "claude-haiku-4-5"),
     ]:

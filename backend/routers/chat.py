@@ -660,7 +660,7 @@ async def chat_stream(ws: WebSocket) -> None:
 #
 # OPT-IN autonomous play→fix loop. Only runs when a client connects to this
 # WebSocket — a normal /stream chat message NEVER triggers it. Each round:
-# invoke the inner Claude (reusing `_stream_claude_cli`, pinned to opus-4-8,
+# invoke the inner Claude (reusing `_stream_claude_cli`, on the heavy route,
 # resuming the project session) with the goal + the prior round's failing
 # verdict as feedback, then run the playtest/drive harness and judge pass/fail.
 # Stops on success, hard caps (max_iters / budget_usd), or a stuck signature
@@ -1243,14 +1243,14 @@ async def _stream_deepseek(
 # Model pins for the original inner game-maker Claude. THREE selectable
 # captain routes, each overridable from `.env` WITHOUT a restart:
 #   • claude_sonnet → "sonnet"          (fast; subscription-covered)
-#   • claude_opus   → "claude-opus-4-8" (heavy default; subscription-covered)
+#   • claude_opus   → "claude-opus-5"   (heavy default; subscription-covered)
 #   • claude_fable  → "claude-fable-5"  (premium; $10/$50 per MTok, 1M context —
 #                     NOT covered by a plain Max subscription, so it's credit-
 #                     billed and the headless CLI returns "Usage credits are
 #                     required for this model" without ANTHROPIC_API_KEY / credits)
 # The heavy default is Opus (safe on subscription); Fable 5 is an explicit,
 # opt-in third choice. Internal UI keys stay stable for compatibility (AGENTS.md).
-_CLAUDE_OPUS_MODEL_DEFAULT = "claude-opus-4-8"
+_CLAUDE_OPUS_MODEL_DEFAULT = "claude-opus-5"
 _CLAUDE_SONNET_MODEL_DEFAULT = "sonnet"
 _CLAUDE_FABLE_MODEL_DEFAULT = "claude-fable-5"
 

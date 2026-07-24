@@ -75,7 +75,7 @@ type Msg = {
 const MODEL_OPTIONS: { value: ChatModel; label: string; hint: string; tint: string }[] = [
   { value: "deepseek_v4",   label: "DeepSeek V4 Flash",  hint: "cheap, $/M",    tint: "text-blue-400" },
   { value: "claude_sonnet", label: "Claude Sonnet",  hint: "fast default route",    tint: "text-accent" },
-  { value: "claude_opus",   label: "Opus 4.8",       hint: "default orchestrator", tint: "text-accent-hot" },
+  { value: "claude_opus",   label: "Opus 5",         hint: "default orchestrator", tint: "text-accent-hot" },
   { value: "claude_fable",  label: "Fable 5",        hint: "premium · $10/$50 MTok · credits", tint: "text-purple-400" },
   // Kimi K3 captain: Claude Code CLI → Moonshot Anthropic-compatible endpoint
   // (KIMI_API_KEY in Settings). Available under BOTH claude and codex CLI modes.
