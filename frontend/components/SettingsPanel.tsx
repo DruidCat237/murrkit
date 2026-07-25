@@ -117,6 +117,13 @@ export default function SettingsPanel() {
     setEdits({});
   }
 
+  /** Re-read the snapshot WITHOUT discarding unsaved edits — used after a
+   *  backend restart, where the point is to pick up fields the reloaded code
+   *  now exposes, not to throw away what the user is typing. */
+  async function refreshKeepingEdits() {
+    setSnapshot(await getConfig());
+  }
+
   // "Reload from .env" wipes every unsaved field — confirm first when edits
   // exist (the label reads ambiguously, and it's a silent data-loss otherwise).
   function reloadFromEnv() {
@@ -194,6 +201,12 @@ export default function SettingsPanel() {
     try {
       const r = await reloadBackend();
       setReloadNote(r.note);
+      if (r.restarting) {
+        // The backend exits ~0.7s from now and the shell respawns it ~2.5s
+        // later. Re-read the config once it's back so NEW fields (added by
+        // the reloaded code) actually appear without a manual refresh.
+        window.setTimeout(() => { void refreshKeepingEdits().catch(() => undefined); }, 6000);
+      }
     } catch (e) {
       // The backend is often down/restarting exactly when this is clicked —
       // surface it instead of swallowing the rejection with no feedback.

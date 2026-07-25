@@ -123,7 +123,11 @@ function spawnServer(label, command, cwd) {
       shell: true, // needed so `uv` / `npm` resolve via the shell (.cmd shims on Windows)
       windowsHide: true,
       stdio,
-      env: { ...process.env },
+      // MURRKIT_DESKTOP_SHELL tells the backend a supervisor is watching, so
+      // Settings → "Reload backend" may exit the process to reload its code —
+      // the `exit` handler below respawns it. Standalone backends must NOT do
+      // that (nothing would bring them back), hence the explicit marker.
+      env: { ...process.env, MURRKIT_DESKTOP_SHELL: "1" },
     });
     child.on("error", (e) => console.error(`[${label}] spawn error:`, e.message));
     // SELF-HEAL: if a server dies unexpectedly (crash, OOM on a huge captain

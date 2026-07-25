@@ -516,8 +516,10 @@ export async function testEndpoint(
   return post<TestResult>(`/api/config/test/${which}`, {});
 }
 
-export async function reloadBackend(): Promise<{ ok: boolean; note: string }> {
-  return post<{ ok: boolean; note: string }>("/api/config/reload", {});
+/** Restart the backend process (only possible under the desktop shell, which
+ *  respawns it). `restarting: false` means it just returned manual advice. */
+export async function reloadBackend(): Promise<{ ok: boolean; note: string; restarting?: boolean }> {
+  return post<{ ok: boolean; note: string; restarting?: boolean }>("/api/config/reload", {});
 }
 
 // ---- Library -----------------------------------------------------------------

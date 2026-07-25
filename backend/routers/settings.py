@@ -10,12 +10,13 @@ Endpoints:
     POST  /api/config/test/agent        — invoke configured local agent CLI `--version`
     POST  /api/config/test/anthropic    — legacy alias for /test/agent
     POST  /api/config/test/unity_mcp    — ping http://127.0.0.1:8080 or stdio probe
-    POST  /api/config/reload            — best-effort: instruct uvicorn worker to
-                                          reload (returns hint to user)
+    POST  /api/config/reload            — restart the backend process (under the
+                                          desktop shell); hint when standalone
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -25,6 +26,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter
+from loguru import logger
 from pydantic import BaseModel
 
 from core.config import PROJECT_ROOT, settings
@@ -266,15 +268,46 @@ async def update_config(req: ConfigUpdateRequest) -> dict[str, Any]:
 
 @router.post("/reload")
 async def reload_backend() -> dict[str, Any]:
-    """Hint user how to reload — uvicorn worker can't self-reload via API safely."""
+    """Actually restart the backend so NEW CODE takes effect — not just `.env`.
+
+    Why this used to be a no-op returning advice: a worker cannot re-import
+    itself mid-request. But under the desktop shell there IS a supervisor —
+    `desktop/main.js::spawnServer` self-heals any server that exits — so the
+    honest "reload" is to exit cleanly right after answering; the shell brings
+    us back a couple of seconds later running the current code.
+
+    `os._exit` (not `sys.exit`) on purpose: uvicorn's graceful shutdown waits
+    for in-flight requests, and THIS request is one of them — the polite path
+    would deadlock against itself.
+
+    Standalone (no shell, e.g. `uv run uvicorn …` in a terminal) nothing would
+    restart us, so there we keep the old behaviour and just say what to run.
+    """
+    if os.environ.get("MURRKIT_DESKTOP_SHELL") != "1":
+        return {
+            "ok": True,
+            "restarting": False,
+            "note": (
+                "Backend is running standalone (no desktop supervisor), so it "
+                "cannot restart itself — nothing would bring it back. Restart "
+                "it yourself: `uv run uvicorn backend.main:app --port 8001`. "
+                "Tip: `--reload` picks up code changes automatically."
+            ),
+        }
+
+    async def _exit_after_response() -> None:
+        await asyncio.sleep(0.7)  # let the HTTP response flush to the client
+        logger.info("Restart requested from Settings — exiting; the desktop shell will respawn us")
+        os._exit(0)
+
+    asyncio.create_task(_exit_after_response())
     return {
         "ok": True,
+        "restarting": True,
         "note": (
-            "Soft reload not supported via API (would kill the request). "
-            "Run: `uv run uvicorn backend.main:app --port 8001 --reload` "
-            "in your terminal, or restart the backend manually. "
-            "Most env changes take effect on next .env read (per-call), but "
-            "API keys cached in `core.config.settings` need a full restart."
+            "Restarting the backend… it comes back in a few seconds with the "
+            "current code (new Settings fields, new defaults). The UI "
+            "reconnects on its own."
         ),
     }
 
