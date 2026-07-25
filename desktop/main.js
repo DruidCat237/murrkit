@@ -172,13 +172,77 @@ function backendCmd(home) {
   return "uv run python -m uvicorn backend.main:app --port 8001";
 }
 
+// Ports our three servers own. Anything of OURS still listening here when we
+// start is a leftover from a previous session. 5174-5176 are included because
+// Vite silently walks to the next free port when 5173 is taken — that is how
+// the game preview ends up somewhere the app is not looking (observed: stale
+// orphans held 5173-5175, so the fresh Vite bound 5176 and the Phaser panel
+// showed nothing).
+const SERVER_PORTS = [8001, 3001, 5173, 5174, 5175, 5176];
+
+/**
+ * Kill murrkit servers left listening on our ports by a previous session.
+ *
+ * Why this exists: if the app exits without running killServers (crash, force
+ * quit, machine sleep), the spawned servers survive as ORPHANS. The next
+ * launch then found port 3001 answering, concluded "already running" and
+ * silently adopted them — so the UI talked to a backend running code from
+ * days ago. Python does not hot-reload, so every backend-side change looked
+ * like it had no effect, while the Next.js frontend DID hot-reload from disk:
+ * a half-updated app that is very hard to diagnose from the outside. (Real
+ * incident 2026-07-25: servers from 07-23 19:02 serving a UI built minutes
+ * earlier.)
+ *
+ * Ownership test = the listener's command line references MURRKIT_HOME. That
+ * is what actually distinguishes our servers: the Next.js listener runs as
+ * `node …\frontend\node_modules\next\dist\server\lib\start-server.js` (no
+ * "next dev" anywhere in it), so matching on tool names alone misses it — the
+ * repo path does not. An unrelated dev server on 3001 is left alone. Set
+ * MURRKIT_ADOPT_RUNNING=1 to opt out (hand-started servers you want to keep).
+ */
+function reclaimStalePorts() {
+  if (process.env.MURRKIT_ADOPT_RUNNING === "1") return Promise.resolve();
+  const ps = `
+    $home = '${MURRKIT_HOME.replace(/'/g, "''")}'
+    $rx = [regex]::Escape($home)
+    $ports = ${SERVER_PORTS.join(",")}
+    foreach ($p in $ports) {
+      $c = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+      if (-not $c) { continue }
+      $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($c.OwningProcess)" -ErrorAction SilentlyContinue
+      if ($proc -and $proc.CommandLine -match $rx) {
+        Write-Output "reclaimed port $p (pid $($c.OwningProcess), started $($proc.CreationDate))"
+        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+      }
+    }`;
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child =
+        process.platform === "win32"
+          ? spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { windowsHide: true })
+          : spawn("sh", ["-c", `lsof -ti tcp:${SERVER_PORTS.join(",tcp:")} | xargs -r kill -9`]);
+    } catch (e) {
+      console.warn("port reclaim skipped:", e.message);
+      return resolve();
+    }
+    child.stdout?.on("data", (d) => console.log(`[reclaim] ${String(d).trim()}`));
+    child.on("error", (e) => { console.warn("port reclaim failed:", e.message); resolve(); });
+    // Give the OS a moment to actually release the sockets before we bind.
+    child.on("exit", () => setTimeout(resolve, 1000));
+    setTimeout(resolve, 8000); // never block startup on a wedged shell
+  });
+}
+
 async function maybeStartServers() {
   if (!MURRKIT_HOME) {
     console.warn("murrkit repo not found — skipping auto-start (manual instructions shown).");
     return;
   }
-  // Already running? Don't double-spawn (the user may have started them by hand).
-  if (await dashboardReachable()) return;
+  // Take ownership of our ports FIRST: adopting whatever already answers is
+  // how stale-code sessions happen (see reclaimStalePorts).
+  await reclaimStalePorts();
+  if (process.env.MURRKIT_ADOPT_RUNNING === "1" && (await dashboardReachable())) return;
   spawnServer("backend", backendCmd(MURRKIT_HOME), MURRKIT_HOME);
   spawnServer("frontend", "npm run dev", path.join(MURRKIT_HOME, "frontend"));
   spawnServer("phaser", "npm run dev", path.join(MURRKIT_HOME, "phaser_game"));
