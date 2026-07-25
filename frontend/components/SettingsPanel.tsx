@@ -41,6 +41,14 @@ const FIELD_OVERRIDES: Record<string, { label?: string; help?: string }> = {
     label: "Kimi reasoning effort",
     help: "low | high | max (English). K3's reasoning_effort. Read live per turn — no restart.",
   },
+  MURRKIT_LOOP_BUDGET_CAP_USD: {
+    label: "Loop budget ceiling (USD)",
+    help: "Hard limit for one /loop run — --budget is clamped to this. 0 or 'unlimited' = no ceiling. NOTE: the budget is checked BETWEEN rounds, so one expensive round can overshoot; leave headroom.",
+  },
+  MURRKIT_LOOP_ITERS_CAP: {
+    label: "Loop rounds ceiling",
+    help: "Hard limit on rounds per /loop run — --iters is clamped to this. 0 or 'unlimited' = no ceiling.",
+  },
 };
 
 const SECTIONS: { title: string; keys: string[] }[] = [
@@ -76,6 +84,15 @@ const SECTIONS: { title: string; keys: string[] }[] = [
       "CODEX_APPROVAL_POLICY",
       "CLAUDE_CLI_BIN",
       "ANTHROPIC_API_KEY",
+    ],
+  },
+  {
+    title: "Work loop (/loop)",
+    keys: [
+      "MURRKIT_LOOP_BUDGET_USD",
+      "MURRKIT_LOOP_BUDGET_CAP_USD",
+      "MURRKIT_LOOP_ITERS",
+      "MURRKIT_LOOP_ITERS_CAP",
     ],
   },
   {

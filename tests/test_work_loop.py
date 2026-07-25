@@ -4,6 +4,8 @@ detection, stop precedence, prompt construction, log rendering."""
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from backend.services import work_loop as wl
@@ -11,16 +13,79 @@ from backend.services import work_loop as wl
 # ---- clamp_caps / config -----------------------------------------------------
 
 
+def _settings(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, str]) -> None:
+    """Pin the Settings-backed values. Patches `_env_value` itself because the
+    real one reads the repo's `.env` first, which a test must not depend on."""
+    monkeypatch.setattr(
+        wl, "_env_value", lambda key, default="": mapping.get(key, default)
+    )
+
+
 def test_clamp_caps_defaults_on_garbage() -> None:
-    assert wl.clamp_caps(None, None) == (wl.MAX_ITERS_DEFAULT, wl.BUDGET_USD_DEFAULT)
-    assert wl.clamp_caps("x", "y") == (wl.MAX_ITERS_DEFAULT, wl.BUDGET_USD_DEFAULT)
-    assert wl.clamp_caps(0, -3) == (1, wl.BUDGET_USD_DEFAULT)
+    assert wl.clamp_caps(None, None) == (wl.iters_default(), wl.budget_default())
+    assert wl.clamp_caps("x", "y") == (wl.iters_default(), wl.budget_default())
+    assert wl.clamp_caps(0, -3) == (1, wl.budget_default())
 
 
-def test_clamp_caps_hard_ceilings() -> None:
-    mi, bu = wl.clamp_caps(999, 999.0)
-    assert mi == wl.MAX_ITERS_HARD_CAP
-    assert bu == wl.BUDGET_USD_HARD_CAP
+def test_clamp_caps_uses_configured_ceilings() -> None:
+    mi, bu = wl.clamp_caps(10**9, 10.0**9)
+    assert mi == wl.iters_hard_cap()
+    assert bu == wl.budget_hard_cap()
+
+
+def test_shipped_ceilings_allow_real_work() -> None:
+    # Regression: the old hard-wired $20 / 25 rounds cut long agentic runs
+    # mid-plan (a single round can cost several dollars).
+    assert wl.BUDGET_USD_HARD_CAP >= 300.0
+    assert wl.MAX_ITERS_HARD_CAP >= 100
+
+
+def test_ceilings_come_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch, {
+        "MURRKIT_LOOP_BUDGET_CAP_USD": "250",
+        "MURRKIT_LOOP_ITERS_CAP": "40",
+    })
+    assert wl.budget_hard_cap() == 250.0
+    assert wl.iters_hard_cap() == 40
+    assert wl.clamp_caps(999, 999.0) == (40, 250.0)
+
+
+def test_zero_or_word_ceiling_means_unlimited(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch, {
+        "MURRKIT_LOOP_BUDGET_CAP_USD": "0",
+        "MURRKIT_LOOP_ITERS_CAP": "unlimited",
+    })
+    assert wl.budget_hard_cap() == math.inf
+    assert wl.iters_hard_cap() == wl._ITERS_UNLIMITED
+    # A big explicit request now survives clamping untouched…
+    assert wl.clamp_caps(500, 5000.0) == (500, 5000.0)
+    # …and an infinite budget never trips the gate.
+    assert wl.should_block_before_iteration(
+        cost_so_far=99_999.0, budget_usd=math.inf
+    ).stop is False
+
+
+def test_unparsable_ceiling_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch, {
+        "MURRKIT_LOOP_BUDGET_CAP_USD": "abc",
+        "MURRKIT_LOOP_ITERS_CAP": "xyz",
+    })
+    assert wl.budget_hard_cap() == wl.BUDGET_USD_HARD_CAP
+    assert wl.iters_hard_cap() == wl.MAX_ITERS_HARD_CAP
+
+
+def test_run_defaults_come_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch, {
+        "MURRKIT_LOOP_BUDGET_USD": "50",
+        "MURRKIT_LOOP_ITERS": "12",
+    })
+    cfg = wl.WorkLoopConfig.from_request({"project_name": "p", "prompt": "x"})
+    assert (cfg.max_iters, cfg.budget_usd) == (12, 50.0)
+
+
+def test_fmt_budget_renders_infinity() -> None:
+    assert wl.fmt_budget(math.inf) == "∞"
+    assert wl.fmt_budget(12.5) == "$12.50"
 
 
 def test_config_requires_project_and_prompt() -> None:

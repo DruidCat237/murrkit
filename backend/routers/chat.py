@@ -907,8 +907,8 @@ async def chat_loop(ws: WebSocket) -> None:
           "task_id": "<uuid>"            (optional — for /abort)
           "project_name": "...",
           "prompt": "the task, re-injected verbatim every round",
-          "max_iters": 8,                (optional; HARD CAP 25)
-          "budget_usd": 6.0              (optional; HARD CAP 20.0)
+          "max_iters": 8,                (optional; ceiling from Settings)
+          "budget_usd": 6.0              (optional; ceiling from Settings)
         }
 
     Server → client streams the SAME event shape /stream uses (started/token/

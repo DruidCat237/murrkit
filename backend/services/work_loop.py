@@ -31,19 +31,121 @@ to keep it current every round.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-# ---- Hard caps (non-negotiable runaway-cost guard) -------------------------
-# Work loops run bigger jobs than autoplay's play→fix, so the ceilings are
-# higher — but they exist for the same reason and are clamped the same way.
+# ---- Caps (runaway guard — USER-CONTROLLED from Settings) -------------------
+# Every value below is a FALLBACK: the live value comes from `.env` (Settings
+# → Work loop), read per run without a restart. A long agentic round can cost
+# several dollars, so the shipped ceiling is generous ($300) rather than the
+# old hard-wired $20 that cut real work mid-plan.
+#
+#   MURRKIT_LOOP_BUDGET_USD      default spend for a run without --budget
+#   MURRKIT_LOOP_BUDGET_CAP_USD  ceiling for --budget      (0 / "unlimited" → ∞)
+#   MURRKIT_LOOP_ITERS           default rounds without --iters
+#   MURRKIT_LOOP_ITERS_CAP       ceiling for --iters       (0 / "unlimited" → ∞)
+#
+# NOTE ON OVERSHOOT: the budget gate runs BETWEEN rounds, never inside one, so
+# a single expensive round can carry the total past the limit before the loop
+# notices (observed: $35 total against a $20 budget). Budget the CEILING, not
+# the exact spend — leave room for one round of headroom.
 
 MAX_ITERS_DEFAULT = 8
-MAX_ITERS_HARD_CAP = 25
+MAX_ITERS_HARD_CAP = 100
 BUDGET_USD_DEFAULT = 6.0
-BUDGET_USD_HARD_CAP = 20.0
+BUDGET_USD_HARD_CAP = 300.0
+
+# "Unlimited" iterations is represented as a very large int (keeps the return
+# type an int); at any realistic per-round cost this is never reached.
+_ITERS_UNLIMITED = 1_000_000
+_UNLIMITED_WORDS = {"unlimited", "none", "off", "inf", "infinite", "0"}
+
+
+def _env_value(key: str, default: str = "") -> str:
+    """Read a `KEY=value` override live from `.env` (no restart needed),
+    falling back to the process environment.
+
+    Mirrors `chat.py::_env_value`; duplicated instead of imported so this pure
+    logic module never pulls in a router. `core.config` is imported lazily for
+    the same reason.
+    """
+    import os
+
+    try:
+        from core.config import PROJECT_ROOT
+
+        env_path = PROJECT_ROOT / ".env"
+        if env_path.is_file():
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                if k.strip().upper() == key:
+                    return v.strip().strip('"').strip("'")
+    except (ImportError, OSError):
+        pass  # no config module / unreadable .env → fall through to os.environ
+    return os.environ.get(key, default)
+
+
+def budget_hard_cap() -> float:
+    """Ceiling for one run's spend. Settings: MURRKIT_LOOP_BUDGET_CAP_USD;
+    `0` / `unlimited` removes the ceiling entirely."""
+    raw = _env_value("MURRKIT_LOOP_BUDGET_CAP_USD", "").strip().lower()
+    if not raw:
+        return BUDGET_USD_HARD_CAP
+    if raw in _UNLIMITED_WORDS:
+        return math.inf
+    try:
+        value = float(raw)
+    except ValueError:
+        return BUDGET_USD_HARD_CAP
+    return math.inf if value <= 0 else value
+
+
+def iters_hard_cap() -> int:
+    """Ceiling for one run's round count. Settings: MURRKIT_LOOP_ITERS_CAP;
+    `0` / `unlimited` lifts it to `_ITERS_UNLIMITED`."""
+    raw = _env_value("MURRKIT_LOOP_ITERS_CAP", "").strip().lower()
+    if not raw:
+        return MAX_ITERS_HARD_CAP
+    if raw in _UNLIMITED_WORDS:
+        return _ITERS_UNLIMITED
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return MAX_ITERS_HARD_CAP
+    return _ITERS_UNLIMITED if value <= 0 else value
+
+
+def budget_default() -> float:
+    """Spend for a run started without `--budget`. Settings:
+    MURRKIT_LOOP_BUDGET_USD."""
+    raw = _env_value("MURRKIT_LOOP_BUDGET_USD", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return BUDGET_USD_DEFAULT
+    return value if value > 0 else BUDGET_USD_DEFAULT
+
+
+def iters_default() -> int:
+    """Rounds for a run started without `--iters`. Settings:
+    MURRKIT_LOOP_ITERS."""
+    raw = _env_value("MURRKIT_LOOP_ITERS", "").strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return MAX_ITERS_DEFAULT
+    return value if value > 0 else MAX_ITERS_DEFAULT
+
+
+def fmt_budget(value: float) -> str:
+    """Human-readable budget for logs/messages (`∞` instead of `inf`)."""
+    return "∞" if math.isinf(value) else f"${value:.2f}"
 
 # Stop when the identical marker signature repeats this many times in a row.
 STUCK_REPEAT_THRESHOLD = 3
@@ -89,8 +191,8 @@ class WorkLoopConfig:
             raise ValueError("loop: 'prompt' (the task re-injected each round) is required")
 
         max_iters, budget_usd = clamp_caps(
-            req.get("max_iters", MAX_ITERS_DEFAULT),
-            req.get("budget_usd", BUDGET_USD_DEFAULT),
+            req.get("max_iters", iters_default()),
+            req.get("budget_usd", budget_default()),
         )
         return cls(
             project_name=project_name,
@@ -101,22 +203,23 @@ class WorkLoopConfig:
 
 
 def clamp_caps(max_iters: Any, budget_usd: Any) -> tuple[int, float]:
-    """Clamp client-requested caps to the hard limits (same contract as
-    autoplay_loop.clamp_caps, different ceilings)."""
+    """Clamp client-requested caps to the CONFIGURED ceilings (Settings →
+    Work loop; see `budget_hard_cap`/`iters_hard_cap`). Garbage input falls
+    back to the configured defaults rather than raising — the caller already
+    validated the load-bearing fields."""
     try:
         mi = int(max_iters)
     except (TypeError, ValueError):
-        mi = MAX_ITERS_DEFAULT
-    mi = max(1, min(mi, MAX_ITERS_HARD_CAP))
+        mi = iters_default()
+    mi = max(1, min(mi, iters_hard_cap()))
 
     try:
         bu = float(budget_usd)
     except (TypeError, ValueError):
-        bu = BUDGET_USD_DEFAULT
+        bu = budget_default()
     if bu <= 0:
-        bu = BUDGET_USD_DEFAULT
-    bu = min(bu, BUDGET_USD_HARD_CAP)
-    return mi, bu
+        bu = budget_default()
+    return mi, min(bu, budget_hard_cap())
 
 
 # ---- Marker parsing ---------------------------------------------------------
@@ -211,7 +314,7 @@ def evaluate_stop(
         return StopDecision(
             stop=True,
             reason="caps",
-            detail=f"cumulative cost ${cost_so_far:.4f} ≥ budget ${budget_usd:.2f}",
+            detail=f"cumulative cost ${cost_so_far:.4f} ≥ budget {fmt_budget(budget_usd)}",
         )
     if iteration + 1 >= max_iters:
         return StopDecision(stop=True, reason="caps", detail=f"max_iters={max_iters} reached")
@@ -234,7 +337,7 @@ def should_block_before_iteration(
         return StopDecision(
             stop=True,
             reason="caps",
-            detail=f"cumulative cost ${cost_so_far:.4f} ≥ budget ${budget_usd:.2f} (pre-turn)",
+            detail=f"cumulative cost ${cost_so_far:.4f} ≥ budget {fmt_budget(budget_usd)} (pre-turn)",
         )
     return StopDecision(stop=False)
 
@@ -323,7 +426,7 @@ def render_loop_log(
         "",
         f"_Last updated: {ts}_",
         "",
-        f"Caps: max_iters={cfg.max_iters}, budget=${cfg.budget_usd:.2f}. "
+        f"Caps: max_iters={cfg.max_iters}, budget={fmt_budget(cfg.budget_usd)}. "
         f"Status: {done_reason or '(running)'}.",
         "",
         "## Zadanie",

@@ -65,6 +65,11 @@ _SAFE_KEY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "ANTHROPIC_API_KEY":   {"label": "Anthropic API Key (only when MURRKIT_AGENT_CLI=claude)", "kind": "secret", "default": ""},
     "MURRKIT_CLAUDE_EFFORT": {"label": "Captain effort (low/medium/high/xhigh/max — token burn control)", "kind": "plain", "default": "high"},
     "MURRKIT_THINKING_TOKENS": {"label": "Captain thinking budget (tokens per turn)", "kind": "number", "default": "32000"},
+    # Work loop (/loop) — spend + round ceilings, live-read per run.
+    "MURRKIT_LOOP_BUDGET_USD":     {"label": "Loop default budget (USD per run, when /loop has no --budget)", "kind": "number", "default": "6"},
+    "MURRKIT_LOOP_BUDGET_CAP_USD": {"label": "Loop budget CEILING (USD; 0 = unlimited)", "kind": "plain", "default": "300"},
+    "MURRKIT_LOOP_ITERS":          {"label": "Loop default rounds (when /loop has no --iters)", "kind": "number", "default": "8"},
+    "MURRKIT_LOOP_ITERS_CAP":      {"label": "Loop rounds CEILING (0 = unlimited)", "kind": "plain", "default": "100"},
     "MURRKIT_CLI_IDLE_TIMEOUT_S": {"label": "Captain silence backstop (seconds; big Fable turns need headroom)", "kind": "number", "default": "900"},
     "UNITY_PROJECT_PATH":  {"label": "Game Project Path", "kind": "path", "default": ""},
     "UNITY_MCP_SERVER":    {"label": "Engine-MCP Server Script Path (stdio)", "kind": "path", "default": ""},
