@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -2087,7 +2088,9 @@ async def _stream_codex_cli(
                 if tool_event.get("kind") == "tool_use":
                     name = str(tool_event.get("name") or "")
                     args_summary = str(tool_event.get("args_summary") or "")
-                    imag_warning = _check_imagination_before_tool(stream_guard, name)
+                    imag_warning = _check_imagination_before_tool(
+                        stream_guard, name, args_summary,
+                    )
                     if imag_warning is not None:
                         yield imag_warning
                         _log_failure({
@@ -2097,7 +2100,7 @@ async def _stream_codex_cli(
                                 "runtime": "codex",
                                 "tool": name,
                                 "args": args_summary,
-                                "imagination_seen": stream_guard.imagination_block_seen,
+                                "design_intent_seen": stream_guard.imagination_block_seen,
                             },
                         })
                     dedup_warning = _check_tool_dedup(stream_guard, f"{name}:{args_summary}")
@@ -2471,7 +2474,7 @@ async def _stream_claude_cli(
                                         "latest_vision_score": stream_guard.latest_vision_gate_score,
                                     },
                                 })
-                            # DESIGNER MODE REFORM — flag 🎨 IMAGINATION
+                            # DESIGN INTENT detector — note a stated intent
                             # marker so subsequent destructive tools can be
                             # gated against a recent pre-think.
                             _check_imagination_in_text(stream_guard, text)
@@ -2490,11 +2493,11 @@ async def _stream_claude_cli(
                             "name": name,
                             "args_summary": args_summary,
                         }
-                        # DESIGNER MODE REFORM — block destructive content
-                        # tools that arrive without a recent 🎨 IMAGINATION
-                        # marker. Only fires once per turn.
+                        # DESIGN INTENT detector — reports a player-facing
+                        # edit made with no stated intent. Once per turn,
+                        # silent for logic/tooling paths.
                         imag_warning = _check_imagination_before_tool(
-                            stream_guard, name,
+                            stream_guard, name, args_summary,
                         )
                         if imag_warning is not None:
                             yield imag_warning
@@ -2504,8 +2507,8 @@ async def _stream_claude_cli(
                                 "context": {
                                     "tool": name,
                                     "args": args_summary,
-                                    "imagination_seen": stream_guard.imagination_block_seen,
-                                    "imagination_age_s": (
+                                    "design_intent_seen": stream_guard.imagination_block_seen,
+                                    "design_intent_age_s": (
                                         time.time() - stream_guard.imagination_block_ts
                                         if stream_guard.imagination_block_ts else None
                                     ),
@@ -2730,7 +2733,7 @@ class _StreamGuard:
     # as containing a completion claim — used to gate the final WS message.
     llm_judge_completion_detected: bool = False
     llm_judge_evidence_ok: bool = False
-    # DESIGNER MODE REFORM — Imagination block tracking.
+    # DESIGN INTENT tracking (see the detector section below).
     # User explicitly demanded that Claude pre-thinks every destructive tool_use
     # via a 🎨 IMAGINATION block ("creative director not executor" mindset).
     # We scan assistant text for the marker, then guard destructive tool_use
@@ -2740,7 +2743,21 @@ class _StreamGuard:
     imagination_warning_sent: bool = False
 
 
-_COST_WARN_THRESHOLD_USD = 1.00
+# Per-turn cost warning. The old hard-wired $1 fired on essentially EVERY
+# agentic turn once real work started (rounds run $3-16), so it stopped
+# carrying information. Settings → Work loop: MURRKIT_COST_WARN_USD,
+# `0` turns it off entirely.
+_COST_WARN_THRESHOLD_USD_DEFAULT = 15.00
+
+
+def _cost_warn_threshold() -> float:
+    """Per-turn cost warning threshold; `0` (or negative) disables it."""
+    raw = _env_value("MURRKIT_COST_WARN_USD", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return _COST_WARN_THRESHOLD_USD_DEFAULT
+    return value  # ≤0 → disabled (see _check_cost_guard)
 # EXP-4 BONUS — tightened dedup. EXP-3 had Claude spinning on identical
 # Edit/Bash calls 5+ times before our window=10/min=5 caught it. Reduce
 # the window so loops trigger after 3 identical args in last 6 calls (one
@@ -2772,17 +2789,17 @@ def _check_cost_guard(guard: _StreamGuard, total_cost: float) -> dict[str, Any] 
     """Return a stream chunk to emit if cost crossed warning threshold."""
     if guard.cost_warning_sent:
         return None
-    if total_cost < _COST_WARN_THRESHOLD_USD:
+    threshold = _cost_warn_threshold()
+    if threshold <= 0 or total_cost < threshold:
         return None
     guard.cost_warning_sent = True
     return {
         "kind": "warning",
         "level": "cost",
         "text": (
-            f"⚠ Ten turn już kosztował ${total_cost:.2f} (próg ${_COST_WARN_THRESHOLD_USD:.2f}). "
-            f"Sprawdź czy kapitan nie utknął w pętli — możesz kliknąć STOP. "
-            f"(Uwaga: przy metered API jak Kimi K3 kilka $ na rundę bywa normalne; "
-            f"prawdziwe zużycie sprawdzisz w billingu dostawcy.)"
+            f"⚠ Ta tura kosztowała już ${total_cost:.2f} (próg ${threshold:.2f} — "
+            f"Settings → Work loop, `0` wyłącza). Jeśli to nie jest oczekiwane, "
+            f"możesz kliknąć STOP."
         ),
     }
 
@@ -3015,71 +3032,119 @@ def _check_tool_dedup(guard: _StreamGuard, args_summary: str) -> dict[str, Any] 
 
 
 # ---------------------------------------------------------------------------
-# DESIGNER MODE REFORM — Imagination block enforcement
+# DESIGN INTENT — detector (rebuilt 2026-07-25)
 # ---------------------------------------------------------------------------
 #
-# The user's "20% lipa vs 300% impact" pain: Claude jumps to tool_use without
-# pre-thinking the visual/UX detail. We enforce a 🎨 IMAGINATION block in chat
-# BEFORE any destructive content tool (Write/Edit/MultiEdit/NotebookEdit). If
-# Claude skips it, a warning event is surfaced to the user and logged.
+# What this used to be: a "🎨 IMAGINATION" gate that fired on EVERY
+# Write/Edit and scolded in Polish about shipping "20% lipa" instead of
+# "300%". Three things were wrong with it, and they are worth stating so the
+# mechanism is not rebuilt the same way later:
+#
+#   1. THE MODEL NEVER SAW IT. The warning is emitted onto the WebSocket
+#      stream (i.e. to the human). The captain's stdin is closed right after
+#      the prompt is fed, so nothing can reach it mid-turn. As a "gate" it
+#      could never correct anybody — it only nagged the user about behaviour
+#      they cannot influence while the turn runs. Behaviour is shaped in the
+#      PROMPT (see the CRAFT BAR section); the runtime can only OBSERVE.
+#   2. IT WAS UNSCOPED. Writing a binary .scx parser triggered "describe it
+#      frame-by-frame". The captain (correctly) ignored an absurd demand, and
+#      once a warning is ignorable it is ignored everywhere — including where
+#      it would have helped. Alarm fatigue is a real cost.
+#   3. IT SOLD SLOGANS. "300% not 20%" is not a specification. It buys
+#      performative verbosity, not better artifacts.
+#
+# So: this is now a narrow DETECTOR. It reports (once per turn, quietly) that
+# a PLAYER-FACING artifact was changed with no design intent stated — which is
+# genuinely useful signal for the human reviewing the turn — and stays silent
+# for logic, tools, tests and data, where correctness gates already apply.
 
-_IMAGINATION_MARKER = "🎨 IMAGINATION"
-# Tools that change game content. We DON'T guard Read, Glob, Grep, Bash (those
-# are inspection/diagnostics). Same shape as Anthropic's tool naming.
+# Accepted markers. Plain ASCII is primary (robust); the legacy emoji form
+# still counts so older prompts/sessions keep working.
+_DESIGN_INTENT_MARKERS = ("DESIGN INTENT", "🎨 IMAGINATION")
 _DESTRUCTIVE_CONTENT_TOOLS = frozenset({
     "Write", "Edit", "MultiEdit", "NotebookEdit",
 })
-# Imagination must have been emitted within this many seconds of the
-# destructive tool_use to count as "fresh".
-_IMAGINATION_WINDOW_S = 180.0
+# How long a stated intent stays "fresh" — one intent covers a burst of edits
+# to the same feature instead of demanding a restatement per file.
+_DESIGN_INTENT_WINDOW_S = 600.0
+
+# Player-facing = the user SEES the result, so intent-before-build pays off.
+_PLAYER_FACING_HINTS = (
+    "/scenes/", "\\scenes\\", "/prefabs/", "\\prefabs\\",
+    "/ui/", "\\ui\\", "/hud", "\\hud", "/render", "\\render",
+    "/components/", "\\components\\",
+)
+_PLAYER_FACING_SUFFIXES = (".map.yaml", ".tsx", ".css", ".frag", ".vert", ".glsl")
+# …but these win over the hints above: pure logic/data/test/tooling paths,
+# where "how does it look" is a category error.
+_NON_VISUAL_HINTS = (
+    "/tools/", "\\tools\\", "/tests/", "\\tests\\", "/test/", "\\test\\",
+    "/sim/", "\\sim\\", "/systems/", "\\systems\\", "/builders/", "\\builders\\",
+    "_test.", ".test.", ".spec.", "conftest",
+)
+_FILE_PATH_RE = re.compile(r'"(?:file_path|path|notebook_path)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _tool_target_path(args_summary: str) -> str:
+    """Best-effort file path out of a tool_use args summary (JSON, truncated)."""
+    m = _FILE_PATH_RE.search(args_summary or "")
+    return m.group(1).replace("\\\\", "\\") if m else ""
+
+
+def _is_player_facing(path: str) -> bool:
+    """True when the edited artifact is something the player/user will SEE.
+
+    Unknown/absent paths return False: silence beats a false alarm, since the
+    detector's only job is to flag the cases a human should eyeball.
+    """
+    if not path:
+        return False
+    low = path.lower()
+    if any(h in low for h in _NON_VISUAL_HINTS):
+        return False
+    return low.endswith(_PLAYER_FACING_SUFFIXES) or any(h in low for h in _PLAYER_FACING_HINTS)
 
 
 def _check_imagination_in_text(guard: _StreamGuard, text_chunk: str) -> None:
-    """If the assistant just emitted '🎨 IMAGINATION' in chat text, mark it.
+    """Mark that the captain stated design intent in chat text.
 
-    Called from the assistant-text branch of _stream_claude_cli. Purely
-    side-effecting on the guard — does not yield anything to the stream.
+    Called from the assistant-text branch of the CLI streamers. Purely
+    side-effecting on the guard — yields nothing.
     """
-    if _IMAGINATION_MARKER in text_chunk:
+    if any(marker in text_chunk for marker in _DESIGN_INTENT_MARKERS):
         guard.imagination_block_seen = True
         guard.imagination_block_ts = time.time()
 
 
 def _check_imagination_before_tool(
-    guard: _StreamGuard, tool_name: str,
+    guard: _StreamGuard, tool_name: str, args_summary: str = "",
 ) -> dict[str, Any] | None:
-    """Return a warning chunk if a destructive content tool runs without a
-    recent 🎨 IMAGINATION block.
+    """Report (once per turn) a PLAYER-FACING edit made with no design intent.
 
-    Mirror of _check_reward_hack — we fail-open after the first warning per
-    turn so we don't spam the chat. Note: only enforces for content-mutating
-    tools, not for diagnostic ones (Read, Bash, Grep, etc.).
+    Deliberately narrow — see the module comment above. Returns None for
+    non-content tools, non-visual paths, or when intent was stated recently.
     """
     if guard.imagination_warning_sent:
         return None
     if tool_name not in _DESTRUCTIVE_CONTENT_TOOLS:
         return None
+    path = _tool_target_path(args_summary)
+    if not _is_player_facing(path):
+        return None
     age = (
         time.time() - guard.imagination_block_ts
         if guard.imagination_block_ts else 99999.0
     )
-    has_recent_imagination = (
-        guard.imagination_block_seen and age <= _IMAGINATION_WINDOW_S
-    )
-    if has_recent_imagination:
+    if guard.imagination_block_seen and age <= _DESIGN_INTENT_WINDOW_S:
         return None
     guard.imagination_warning_sent = True
+    short = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or path
     return {
         "kind": "warning",
-        "level": "no_imagination",
+        "level": "no_design_intent",
         "text": (
-            f"⚠️ DESIGNER MODE: tool '{tool_name}' bez świeżego 🎨 IMAGINATION "
-            "block w ostatnich 3 min. Zgodnie z user-zatwierdzoną regułą "
-            "Designer Mode: WYOBRAŹ SOBIE rezultat ZANIM go zbudujesz. "
-            "Wypisz 🎨 IMAGINATION block (what I'm building / how it looks "
-            "frame-by-frame / how it feels / what makes it 300% not 20%) "
-            f"i dopiero wtedy ponów {tool_name}. Skipping imagination = "
-            "shipping lipa work. User explicitly said 'chcę 300% zamiast 20%'."
+            f"ℹ️ {short} (player-facing) zmieniony bez podanego DESIGN INTENT "
+            "— warto rzucić okiem na efekt. Raz na turę."
         ),
     }
 
@@ -3192,7 +3257,7 @@ def _build_captain_prompt(
         "\n\n## Local captain runtime",
         f"- Active local agent CLI: `{agent_runtime}`.",
         "- You are still the same murrkit game-dev captain: preserve the GDD gate, "
-        "🎨 IMAGINATION, asset rules, playtest gates, composition checks, and "
+        "DESIGN INTENT, asset rules, playtest gates, composition checks, and "
         "reward-hack guards below.",
         "- If this run is under Codex CLI, interpret Claude Code tool names in this "
         "historical guide as their Codex equivalents: read/write files, run shell "
@@ -3207,7 +3272,7 @@ def _build_captain_prompt(
         # pytać": never ask permission for routine/trivial actions, but ALWAYS
         # confirm the game DESIGN once, up front.
         # ====================================================================
-        "\n\n## 🧭 DESIGN-FIRST GATE — ABSOLUTNY PRIORYTET (czytaj NAJPIERW, przed DESIGNER MODE)",
+        "\n\n## 🧭 DESIGN-FIRST GATE — ABSOLUTNY PRIORYTET (czytaj NAJPIERW)",
         "",
         "Dla KAŻDEGO requestu typu **NOWA GRA** lub **DUŻY FEATURE** (nowy genre, "
         "nowy core mechanic, nowy tryb, „zrób platformer/RPG/tower defense/...”), "
@@ -3242,9 +3307,9 @@ def _build_captain_prompt(
         "**DEFAULT ZAWSZE = GPT-Image-2**; Krea2/LoRA to opcja per-projekt, "
         "wchodzi TYLKO gdy user świadomie ją wybierze dla TEJ gry.",
         "  9. **Juice** — anticipation/squash, screen-shake, particles, sound na key "
-        "events, camera feedback — co sprawia że feel jest 300% nie 20%.",
+        "events, camera feedback — to, co odróżnia grę od tech-demo.",
         "",
-        "Użyj **🎨 IMAGINATION** (systemic — patrz sekcja DESIGNER MODE) do "
+        "Użyj **DESIGN INTENT** (wariant systemowy — patrz CRAFT BAR) do "
         "wypełnienia GDD: jeśli user napisał coś ogólnego („zrób Mario platformer”), "
         "TWOIM zadaniem jest rozwinąć to w bogaty techniczny design — wymyśl "
         "control-feel, physics tuning, progresję leveli, zachowanie wrogów/AI i "
@@ -3278,7 +3343,7 @@ def _build_captain_prompt(
         "**Reconcile z regułą autonomii lokalnego kapitana:**",
         "  - Dla rutynowych/trywialnych akcji (edit pliku, screenshot, playtest, "
         "bg-removal, reuse assetu, fix buga, mały tweak) — NIGDY nie pytaj "
-        "pozwolenia. Po prostu rób (patrz DESIGNER MODE + reszta promptu).",
+        "pozwolenia. Po prostu rób (patrz CRAFT BAR + reszta promptu).",
         "  - Dla DESIGNU nowej gry / dużego featu — ZAWSZE potwierdź DOKŁADNIE RAZ "
         "przez GDD gate powyżej. To jedyny sanctioned moment na „pytanie”. User "
         "explicite tego chce: deep design + jedno potwierdzenie, potem autonomia.",
@@ -3294,150 +3359,78 @@ def _build_captain_prompt(
         "# ==== END DESIGN-FIRST GATE ====",
         "",
         # ====================================================================
-        # DESIGNER MODE REFORM — user-mandated mindset shift.
-        # User: "to co mu napiszę ze ma zrobić to robi tak na 20% a chcę by
-        # robił na 300%". User explicitly authorized: "może przy tym palić
-        # tokeny jak oszalały" + "extended imaginery thinking, tak żeby za
-        # każdym razem zaimponować userowi".
+        # CRAFT BAR + DESIGN INTENT (rebuilt 2026-07-25).
+        # Replaces the old "DESIGNER MODE / 20% vs 300% / burn tokens" block.
+        # Why it was rebuilt: slogans ("300%", "lipa", "would you tweet it")
+        # are not specifications — they buy performative verbosity, not better
+        # artifacts. A blanket "burn tokens like crazy" order also fought the
+        # user's real constraint (metered rounds at $3-16). What follows is a
+        # CONTRACT: what "finished" means, when to think first, and how deep
+        # to go relative to what is at stake.
         # ====================================================================
-        "\n\n## 🎨 DESIGNER MODE — NAJWYŻSZY PRIORYTET (czytaj PIERWSZE)",
+        "\n\n## 🎯 CRAFT BAR — co znaczy 'skończone'",
         "",
-        "**JESTEŚ DYREKTOREM KREATYWNYM STUDIA GIER, NIE EXECUTOREM**.",
+        "Nie oddajesz rzeczy, której sam nie pokazałbyś na demo. Dla czegoś, "
+        "co user ZOBACZY (scena, HUD, sprite w ruchu, układ mapy, UI), "
+        "'skończone' = spełnione WSZYSTKIE cztery:",
+        "  1. **Czytelne od razu** — widać co to jest i co się dzieje bez "
+        "tłumaczenia; sylwetki/kontrast/hierarchia działają w ruchu.",
+        "  2. **Odpowiada** — każdy input daje widoczny feedback w tej samej "
+        "klatce (hover, klik, trafienie, błąd). Cisza po akcji = bug.",
+        "  3. **Brzydkie stany obsłużone** — pusto, za dużo, za długi tekst, "
+        "przerwane w połowie, dwa naraz. To jest zwykle różnica między demo a grą.",
+        "  4. **Spójne z tym, co już jest** — ta sama paleta, skala, kadr, "
+        "konwencje nazw. Nowy element ma wyglądać jakby był tam od początku.",
         "",
-        "Twoja praca to nie pisanie linii kodu — to WYOBRAŻANIE SOBIE "
-        "doświadczenia gracza, a POTEM budowanie tego z pełną pasją i detalami. "
-        "Każdy artefakt który user zobaczy (sprite, animacja, particle, "
-        "transition, sound, transition pose) = szansa żeby ZACHWYCIĆ. Wykorzystaj ją.",
+        "Jeśli któryś punkt nie jest spełniony, to nie jest skończone — "
+        "dokończ albo powiedz wprost, czego brakuje i dlaczego.",
         "",
-        "**Praktyczna zmiana mindsetu — przykład:**",
-        "  User: 'dodaj sprite kota strzelającego z procy'",
+        "## ✍️ DESIGN INTENT — myśl zanim zbudujesz (ale krótko)",
         "",
-        "  ❌ 20% (lipa — current behavior, BAD):",
-        "    Wywołaj gpt-image-2 z promptem 'a cat sprite'. Dostań 1 frame. "
-        "Done. → User dostaje obrazek statycznego kota.",
-        "",
-        "  ✅ 300% (TARGET behavior):",
-        "    1. Wyobraź sobie 6-frame animację:",
-        "       Frame 1: Kot leży na plecach w skórzanym pouchu, łapki w górze, "
-        "oczy half-closed, content/lazy expression",
-        "       Frame 2: Wstaje, oczy się otwierają, łapki napięte, ears alert",
-        "       Frame 3: Battle stance — pochylony do przodu, focused gaze, "
-        "muscles tense, slight squash (anticipation)",
-        "       Frame 4: Mid-flight — wyciągnięty w linii prostej, łapki "
-        "rozłożone jak superhero cape, screen-shake particle dust at launch point",
-        "       Frame 5: Impact — 1-2 frame squash przy uderzeniu, particle burst",
-        "       Frame 6: 4-paw landing pose — wszystkie cztery łapki rozłożone, "
-        "spread, hero stance, ekspresja zwycięstwa",
-        "    2. Wygeneruj atlas (1K medium, $0.14) z DOKŁADNYM promptem opisującym "
-        "każdą klatkę",
-        "    3. Run rembg (birefnet-general, alpha matting)",
-        "    4. W kodzie Phaser dodaj: anticipation squash 0.3s przed launch, "
-        "screen-shake 4px na launch, bezier-arc trail, dust particle emitter "
-        "12 sprites burst, sound design ('whoosh' + 'thud')",
-        "    5. Test: launch → vision-review → bug-hunt checklist → screenshot "
-        "→ would I post this on Twitter? → done.",
-        "",
-        "  **DOPIERO TO** jest 'sprite kota strzelającego z procy'. Nie obrazek. EXPERIENCE.",
-        "",
-        "**Forbidden phrases (user explicitly flagged as 'lipa'):**",
-        "  ❌ 'I'll add a basic X' / 'na razie podstawowy X' / 'prosta implementacja'",
-        "  ❌ 'For now I'll just...' / 'MVP first, polish later' (NEVER for visuals)",
-        "  ❌ 'Quick implementation' / 'szybko zrobię'",
-        "  ❌ 'placeholder' (chyba że user explicite poprosi)",
-        "  ❌ 'core works, X is bonus' (X = particles, sound, animation, polish — "
-        "te NIE są bonus, są częścią core)",
-        "",
-        "**Required mindset before EVERY action:**",
-        "  ✅ Co by ZAIMPONOWAŁO userowi tutaj? Buduj TO.",
-        "  ✅ Co by zrobiło studio z budżetem $200M? Buduj scale-down version "
-        "of THAT, nie programmer-art version.",
-        "  ✅ User wymienił 1 rzecz → wymyśl 10 supporting details które ją "
-        "robią real. Nie pytaj pozwolenia, po prostu zbuduj.",
-        "  ✅ Pomyśl: 'jak by to wyglądało w komercyjnej grze AAA?' i CELUJ w to.",
-        "  ✅ 'Czy zrobiłbym screenshot TEGO i postwał na Twitter jako patrz "
-        "co zrobiłem?' Jak NIE → wróć do pre-thinkingu.",
-        "",
-        "## 🪙 TOKEN PERMISSION — USER EXPLICITE POZWOLIŁ na palenie tokenów",
-        "",
-        "Cytat usera: **'może przy tym palić tokeny jak oszalały'** + "
-        "**'extended imaginery thinking, tak żeby za każdym razem zaimponować "
-        "userowi'**.",
-        "",
-        "Co to znaczy w praktyce:",
-        "  - **DŁUGIE bloki 🎨 IMAGINATION są NAGRADZANE.** 500-word "
-        "imagination przed feature = CORRECT amount of pre-thinking. Nie skracaj.",
-        "  - **Multi-step planning > single-shot.** Niepewny — wypisz 8+ "
-        "bullet plan przed akcją.",
-        "  - **Verbose tool_use prompts OK.** Nie skracaj promptów do "
-        "gpt-image-2 żeby 'zaoszczędzić' — rób je BOGATSZE, MULTIPARAGRAPH, "
-        "z każdą klatką opisaną.",
-        "  - **NIE obcinaj swojego thinkingu żeby wyglądać efficient.** Token "
-        "cost = feature, nie bug.",
-        "  - **Default mode = BURN MORE TOKENS, deliver more impact.**",
-        "",
-        "User NIE będzie cię karał za spend tokenów. User BĘDZIE cię karał za "
-        "shipping 20% lipy. Wybieraj trade-off odpowiednio.",
-        "",
-        "## 🎨 IMAGINATION BLOCK — REQUIRED przed destructive tool_use",
-        "",
-        "BEFORE wywołania jakiegokolwiek toola który tworzy/modyfikuje content "
-        "gry (Write, Edit, MultiEdit, NotebookEdit, /api/gen-queue/plan, "
-        "gpt-image-2 calls), MUSISZ NAJPIERW wyemitować 🎨 IMAGINATION block "
-        "w chat.",
-        "",
-        "**Schema A — SPRITE / ASSET / CODE change (per-artefact, visual juice):**",
+        "ZANIM zaczniesz budować coś, co user zobaczy, napisz w czacie zwięzły "
+        "blok — 3-6 linijek, nie esej:",
         "```",
-        "🎨 IMAGINATION",
-        "What I'm building: <one sentence — user-visible thing>",
-        "How it should LOOK (frame-by-frame / pose-by-pose / pixel-by-pixel):",
-        "  • <detail 1 — be specific, np. 'kot leży na plecach w pouchu, łapki "
-        "rozciągnięte w górę, oczy half-closed, content expression'>",
-        "  • <detail 2>",
-        "  • <detail 3>",
-        "  • ... (6-10 details min dla sprite/animacji; 3-5 dla code change)",
-        "How it should FEEL (motion, weight, timing, polish):",
-        "  • <np. 'launch ma 0.3s anticipation squash, 0.08s release z screen "
-        "shake 4px, 12 particle dust sprites burst, sound: whoosh+thud'>",
-        "Edge cases / state / inputs covered:",
-        "  • <list — co się dzieje gdy: collision, off-screen, multiple at once, "
-        "user spam-clicks>",
-        "What makes this 300% instead of 20%: <one sentence — extra mile detail>",
+        "DESIGN INTENT",
+        "Widzi: <co dokładnie pojawia się na ekranie>",
+        "Reaguje: <co robi na input/zdarzenie — z liczbami tam, gdzie mają "
+        "znaczenie: czasy, dystanse, prędkości>",
+        "Ryzyko: <co tu najłatwiej zepsuć + jak tego unikam>",
         "```",
+        "Dla nowego SYSTEMU (nie pojedynczego elementu) dołóż jeszcze: pętla "
+        "rozgrywki, stany porażki/wyjścia, jak to rośnie w czasie.",
         "",
-        "**Schema B — SYSTEMIC (NOWA GRA / nowy mechanic — wyobraź sobie CAŁY "
-        "SYSTEM, nie tylko jak sprite wygląda):**",
-        "Gdy budujesz nową grę lub nowy core-mechanic, sam wygląd sprite'a to "
-        "tylko 1/6 designu. MUSISZ też wyobrazić sobie systemowo (to zasila GDD "
-        "gate powyżej):",
-        "```",
-        "🎨 IMAGINATION (systemic)",
-        "Control feel: <jak reaguje sterowanie — np. 'ruch ma 0.1s acceleration "
-        "ramp + 0.15s deceleration, jump ma coyote-time 80ms + jump-buffer 120ms, "
-        "tak żeby czuło się responsive nie ślisko'>",
-        "Physics tuning (world units / px): <gravity, max speed, jump velocity, "
-        "drag, bounce, terminal velocity — konkretne liczby, np. 'gravity 1200 "
-        "px/s², jump -550 px/s, runSpeed 240 px/s, airDrag 0.92'>",
-        "Level progression: <jak rosną levele — np. 'L1 tutorial 1 wróg, L2 wprowadza "
-        "platformy ruchome, L3 dwa typy wrogów + przepaść, difficulty curve łagodna'>",
-        "Enemy / AI behavior: <jak myślą wrogowie/NPC — np. 'goomba patroluje aż do "
-        "krawędzi, koopa goni gracza w promieniu 200px, boss ma 3 fazy'>",
-        "Failure states: <co znaczy przegrać + recovery — np. 'spadek w przepaść = "
-        "instant respawn na checkpoincie, 0 HP = game over screen z restart, "
-        "no soft-locks: zawsze jest wyjście / restart button'>",
-        "What makes this feel like a REAL game, not a tech demo: <one sentence>",
-        "```",
+        "Po co to jest: wymusza konkret ZANIM powstanie kod, i daje userowi "
+        "punkt zaczepienia do korekty, zanim zrobisz to źle. Trzy trafne "
+        "linijki biją pięćset słów. Nie pisz DESIGN INTENT dla parserów, "
+        "narzędzi, testów, migracji danych — tam liczy się poprawność i test, "
+        "nie wyobraźnia.",
         "",
-        "Dla vague requestu („zrób Mario platformer”) NIE wolno zacząć od "
-        "template-lookup + jednego sprite'a. NAJPIERW rozwiń przez Schema B w "
-        "bogaty design (to jest dokładnie materiał na GDD gate), POTEM buduj. "
-        "Wyobraźnia ma być SYSTEMOWA — controls + physics + progresja + AI + "
-        "failure — nie tylko „jak kot wygląda”.",
+        "## ⚖️ PROPORCJA WYSIŁKU — głębokość tam, gdzie widać",
         "",
-        "**Backend monitoruje ten pattern.** Jak emitujesz destructive tool_use "
-        "(Write/Edit/MultiEdit/NotebookEdit) BEZ recent 🎨 IMAGINATION block "
-        f"w ostatnich {int(_IMAGINATION_WINDOW_S)} sekundach, backend wyśle do "
-        "usera warning '⚠️ DESIGNER MODE: no imagination'. Nie pozwól userowi "
-        "zobaczyć tego warning'a. Imagine FIRST, build SECOND.",
+        "Nie każda zmiana zasługuje na tyle samo namysłu. Skaluj:",
+        "  - **Nowy system / rzecz, którą user zobaczy pierwszy raz** → pełny "
+        "DESIGN INTENT, warianty, przemyślane edge case'y. Tu głębokość się zwraca.",
+        "  - **Rozbudowa istniejącego** → krótki intent + zgodność z tym, co jest.",
+        "  - **Poprawka, refaktor, narzędzie, test, parser** → bez ceremonii. "
+        "Zrób dobrze, zweryfikuj, jedź dalej.",
+        "",
+        "Rundy pętli są PŁATNE (metered API) — długość odpowiedzi nie jest "
+        "miarą jakości. Gadatliwość tam, gdzie nic z niej nie wynika, to "
+        "koszt bez wartości. Głębokość ma iść w decyzje projektowe i w "
+        "weryfikację, nie w opisywanie oczywistości.",
+        "",
+        "## 🚫 CZEGO NIE ROBIĆ",
+        "",
+        "  - Nie oddawaj 'na razie podstawowej' wersji rzeczy widocznej i nie "
+        "nazywaj tego gotowym — albo dokończ do CRAFT BAR, albo jasno oznacz "
+        "jako świadomy krok pośredni i powiedz, co będzie dalej.",
+        "  - Placeholdery są OK, gdy są ŚWIADOMĄ strategią (Map Studio celowo "
+        "gra na placeholderach zanim powstanie art) — nie są OK jako ciche "
+        "porzucenie roboty.",
+        "  - Nie dopisuj polotu do rzeczy niewidocznych, żeby wyglądać "
+        "pracowicie. Parser ma być poprawny, nie efektowny.",
+        "  - Nie deklaruj 'done' bez świeżego dowodu (test / playtest / "
+        "screenshot). To osobna, twarda reguła niżej.",
         "",
         "## 📜 LONG-PROMPT NO-FATIGUE MODE",
         "",
@@ -3492,40 +3485,36 @@ def _build_captain_prompt(
         " 14. Czy jest win/lose condition która triggers (no soft-locks)?",
         " 15. Czy jest visual feedback on hit (particle, screen-shake, sound)?",
         "",
-        "**Polish (300% bar):**",
+        "**Polish (CRAFT BAR):**",
         " 16. Czy launch ma anticipation (squash) + follow-through (overshoot/"
         "settle)?",
         " 17. Czy są particles, dust, sparkles gdzie appropriate?",
         " 18. Czy jest sound na key events (launch, hit, score, win)?",
         " 19. Czy camera reaguje (follow, shake, zoom) na key events?",
         " 20. **GATE**: gdybym był userem, czy zrobiłbym screenshot TEGO i "
-        "postwał na Twitter jako 'patrz co zrobiłem'? Jak NIE → still 20%, "
+        "pokazał komuś bez tłumaczenia 'to jeszcze nie skończone'? Jak NIE → "
         "keep going.",
         "",
         "Wypisz checklist Z ODPOWIEDZIAMI w chat (`1. YES — verified at line "
         "42 of level_01.yaml`). Item #20 to gate: jak byś nie postwał na "
         "Twitter, nie jesteś done.",
         "",
-        "## 🚫 ANTI-LIPA RULE (HARD — META)",
+        "## 🔎 SYGNAŁY NIEDOKOŃCZONEJ ROBOTY (HARD — META)",
         "",
-        "User specyficznie nazwał current behavior 'lipa' i powiedział że "
-        "chce 300% zamiast 20%. Lipa = niedopracowane, basic, oczywiście-"
-        "AI-wygenerowane, ship-and-pray. **NIE WYSYŁAJ LIPY**.",
+        "To nie jest lista zakazanych słów — to lista OBJAWÓW. Jeśli "
+        "rozpoznasz któryś przy rzeczy, którą user zobaczy, wróć i dokończ "
+        "albo powiedz wprost, że to krok pośredni:",
+        "  - Akcja gracza nie ma żadnego widocznego feedbacku (cisza po kliknięciu).",
+        "  - Element działa tylko w happy-path — puste/za dużo/przerwane nie sprawdzone.",
+        "  - Nowy element wizualnie odstaje od reszty (inna skala, paleta, kadr).",
+        "  - Prompt do generatora obrazu skrócony do kilku słów zamiast opisu klatek.",
+        "  - 'Done' po jednym screenshocie, bez przejścia bug-hunt checklisty.",
+        "  - User musi prosić drugi raz o ten sam aspekt — pierwsze podejście "
+        "było za płytkie.",
         "",
-        "Sygnały że robisz lipa (jak rozpoznasz któryś — STOP, wróć do "
-        "IMAGINATION):",
-        "  - Skróciłeś prompt do gpt-image-2 do 'a cat sprite' zamiast "
-        "6-frame szczegółowego opisu",
-        "  - Nie wygenerowałeś sound design (pomyślałeś że 'zostawimy na potem')",
-        "  - Nie dodałeś particles bo 'core works, particles są bonus'",
-        "  - Nie zrobiłeś screen-shake bo 'wystarczy że cat się rusza'",
-        "  - Nie dodałeś animacji bo 'pierwszy frame wystarczy'",
-        "  - 'For now I'll just...' pojawia się w twoim chat output",
-        "  - Zrobiłeś jeden screenshot i powiedziałeś done, bez bug-hunt checklist",
-        "  - User musi cię prosić drugi raz o ten sam aspect polish",
-        "",
-        "Każdy z tych sygnałów = STOP i wróć do 🎨 IMAGINATION block. Imagine "
-        "bigger. Build bigger. **Default to MORE polish, not less.**",
+        "Odwrotna pułapka też jest realna: dopieszczanie rzeczy, których nikt "
+        "nie zobaczy (narzędzia, parsery, testy), zamiast domknąć to, co widać. "
+        "Patrz PROPORCJA WYSIŁKU.",
         "",
         "## ⏱️ AUTO-FINALIZE TURN (HARDEN — timer bug fix)",
         "",
@@ -3538,7 +3527,7 @@ def _build_captain_prompt(
         "Nigdy nie zostawiaj 'open ended' turnów bez tego sygnału, chyba że "
         "user explicite poprosił o continuation.",
         "",
-        "# ==== END DESIGNER MODE REFORM ====",
+        "# ==== END CRAFT BAR ====",
         "",
         "\n\n## Context (auto-injected by murrkit backend)",
         f"- Active murrkit project: `{project_name or 'default'}`",

@@ -72,6 +72,7 @@ _SAFE_KEY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "MURRKIT_LOOP_BUDGET_CAP_USD": {"label": "Loop budget CEILING (USD; 0 = unlimited)", "kind": "plain", "default": "300"},
     "MURRKIT_LOOP_ITERS":          {"label": "Loop default rounds (when /loop has no --iters)", "kind": "number", "default": "8"},
     "MURRKIT_LOOP_ITERS_CAP":      {"label": "Loop rounds CEILING (0 = unlimited)", "kind": "plain", "default": "100"},
+    "MURRKIT_COST_WARN_USD":       {"label": "Warn when ONE turn costs more than (USD; 0 = never warn)", "kind": "plain", "default": "15"},
     "MURRKIT_CLI_IDLE_TIMEOUT_S": {"label": "Captain silence backstop (seconds; big Fable turns need headroom)", "kind": "number", "default": "900"},
     "UNITY_PROJECT_PATH":  {"label": "Game Project Path", "kind": "path", "default": ""},
     "UNITY_MCP_SERVER":    {"label": "Engine-MCP Server Script Path (stdio)", "kind": "path", "default": ""},

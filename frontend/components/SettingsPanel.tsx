@@ -93,6 +93,7 @@ const SECTIONS: { title: string; keys: string[] }[] = [
       "MURRKIT_LOOP_BUDGET_CAP_USD",
       "MURRKIT_LOOP_ITERS",
       "MURRKIT_LOOP_ITERS_CAP",
+      "MURRKIT_COST_WARN_USD",
     ],
   },
   {
