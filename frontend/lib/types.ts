@@ -137,6 +137,9 @@ export type ChatStreamEvent =
  *  ends ONE ROUND, not the stream — only `loop_done` is terminal. */
 export type LoopStreamEvent =
   | ChatStreamEvent
+  /** Liveness beat every 20s — carries no content, but resets the client's
+   *  idle watchdog so a long silent round is not mistaken for a dead backend. */
+  | { kind: "ping"; ts: number }
   | { kind: "warning"; level: string; text: string }
   | { kind: "loop_iter"; i: number; status: "continue" | "done" | "blocked" | "missing"; detail: string; cost_so_far: number }
   | { kind: "loop_done"; reason: "done" | "blocked" | "caps" | "stuck"; detail: string; iters: number; cost: number };

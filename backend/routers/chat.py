@@ -466,6 +466,48 @@ async def send_chat(req: ChatSendRequest) -> ChatSendResponse:
 # ---- WebSocket streaming ----------------------------------------------------
 
 
+class _WsChannel:
+    """Serialized WebSocket writer + liveness heartbeat.
+
+    Two things share one socket during a turn: the chunk relay and the ping
+    timer. Every frame therefore goes through a single lock — concurrent
+    `send_text` calls would interleave and corrupt frames.
+
+    The heartbeat is not decoration. Deep reasoning or a multi-minute tool
+    call produces NO stream events, which is indistinguishable from a dead
+    backend to the dashboard — whose idle watchdog then kills a perfectly
+    healthy turn ("Connection lost after 240s of silence"). A `ping` every
+    20 s keeps that watchdog honest: it now only fires when the backend is
+    genuinely gone. /stream had this from the start; /loop and /autoplay did
+    not, which is exactly why long loop rounds died at the 4-minute mark.
+    """
+
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+        self._lock = asyncio.Lock()
+        self._task: asyncio.Task[None] | None = None
+
+    async def send(self, payload: dict[str, Any]) -> None:
+        async with self._lock:
+            await self._ws.send_text(json.dumps(payload))
+
+    async def _beat(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_WS_HEARTBEAT_INTERVAL_S)
+                await self.send({"kind": "ping", "ts": time.time()})
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            return  # socket closed / turn over — heartbeat just stops
+
+    def start_heartbeat(self) -> None:
+        self._task = asyncio.create_task(self._beat())
+
+    def stop_heartbeat(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+
 @router.websocket("/stream")
 async def chat_stream(ws: WebSocket) -> None:
     """
@@ -520,29 +562,12 @@ async def chat_stream(ws: WebSocket) -> None:
         task = _Task(task_id=task_id, kind=model)
         _tasks[task_id] = task
 
-        # Serialize ALL frame writes: the heartbeat task below and the chunk
-        # relay would otherwise interleave concurrent ws.send_text calls.
-        send_lock = asyncio.Lock()
-
-        async def _send(payload: dict[str, Any]) -> None:
-            async with send_lock:
-                await ws.send_text(json.dumps(payload))
-
-        # Liveness heartbeat: a `ping` every 20s for as long as the turn runs.
-        # Long single-tool executions (Fable auditing 17 sheets, long playtests)
-        # legitimately produce minutes of stream silence — the pings tell the
-        # dashboard "still alive, keep waiting", so its idle watchdog only
-        # fires when the backend is actually gone.
-        async def _heartbeat() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(_WS_HEARTBEAT_INTERVAL_S)
-                    await _send({"kind": "ping", "ts": time.time()})
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                return  # socket closed / turn over — heartbeat just stops
+        # Serialized writer + 20s liveness pings (see _WsChannel).
+        channel = _WsChannel(ws)
+        _send = channel.send
 
         await _send({"kind": "started", "task_id": task_id, "model": model})
-        heartbeat_task = asyncio.create_task(_heartbeat())
+        channel.start_heartbeat()
 
         try:
             if model == "deepseek_v4":
@@ -616,7 +641,7 @@ async def chat_stream(ws: WebSocket) -> None:
             else:
                 await _send({"kind": "error", "error": f"Unknown model {model!r}"})
         finally:
-            heartbeat_task.cancel()
+            channel.stop_heartbeat()
 
     except WebSocketDisconnect:
         logger.info("Chat WS disconnected (task={t})", t=task_id)
@@ -711,6 +736,11 @@ async def chat_autoplay(ws: WebSocket) -> None:
         await ws.close(code=1008)  # policy violation — cross-site handshake
         return
     await ws.accept()
+    # Serialized writer + 20s liveness pings: a long silent round
+    # (deep reasoning, minutes-long tool) must not look like a dead
+    # backend to the dashboard's idle watchdog. See _WsChannel.
+    channel = _WsChannel(ws)
+    channel.start_heartbeat()
     task_id: str | None = None
     task: _Task | None = None
     cost_so_far = 0.0
@@ -724,7 +754,7 @@ async def chat_autoplay(ws: WebSocket) -> None:
         try:
             cfg = al.AutoplayConfig.from_request(req)
         except ValueError as e:
-            await ws.send_text(json.dumps({"kind": "error", "error": str(e)}))
+            await channel.send({"kind": "error", "error": str(e)})
             return
 
         # Always use the heavy route for autoplay; resolve it per active runtime
@@ -733,9 +763,9 @@ async def chat_autoplay(ws: WebSocket) -> None:
         task = _Task(task_id=task_id, kind="claude_cli")
         _tasks[task_id] = task
 
-        await ws.send_text(json.dumps(
+        await channel.send(
             {"kind": "started", "task_id": task_id, "model": model_choice}
-        ))
+        )
 
         rounds: list[dict[str, Any]] = []
         recent_signatures: list[str] = []
@@ -743,7 +773,7 @@ async def chat_autoplay(ws: WebSocket) -> None:
 
         for i in range(cfg.max_iters):
             if task.abort_event.is_set():
-                await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                await channel.send({"kind": "aborted", "reason": "user"})
                 done_reason = done_reason or "caps"
                 break
 
@@ -753,9 +783,9 @@ async def chat_autoplay(ws: WebSocket) -> None:
             )
             if pre.stop:
                 done_reason = pre.reason
-                await ws.send_text(json.dumps({
+                await channel.send({
                     "kind": "warning", "level": "autoplay_caps", "text": pre.detail,
-                }))
+                })
                 break
 
             iters_run = i + 1
@@ -774,9 +804,9 @@ async def chat_autoplay(ws: WebSocket) -> None:
                 project_name=cfg.project_name,
             ):
                 if task.abort_event.is_set():
-                    await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                    await channel.send({"kind": "aborted", "reason": "user"})
                     break
-                await ws.send_text(json.dumps(chunk))
+                await channel.send(chunk)
                 if chunk.get("kind") == "final":
                     turn_cost = float(chunk.get("cost_usd", 0.0) or 0.0)
             if task.abort_event.is_set():
@@ -795,14 +825,14 @@ async def chat_autoplay(ws: WebSocket) -> None:
             prev_verdict = verdict
 
             # --- 3. Per-iteration summary event ------------------------------
-            await ws.send_text(json.dumps({
+            await channel.send({
                 "kind": "autoplay_iter",
                 "i": i,
                 "verdict_pass": verdict.passed,
                 "cost_so_far": round(cost_so_far, 6),
                 "signature": verdict.signature,
                 "feedback": "" if verdict.passed else verdict.feedback,
-            }))
+            })
 
             rounds.append({
                 "i": i,
@@ -834,11 +864,11 @@ async def chat_autoplay(ws: WebSocket) -> None:
             )
             if decision.stop:
                 done_reason = decision.reason
-                await ws.send_text(json.dumps({
+                await channel.send({
                     "kind": "warning",
                     "level": f"autoplay_{decision.reason}",
                     "text": decision.detail,
-                }))
+                })
                 break
 
         # Loop fell through without an explicit stop = exhausted iters.
@@ -855,25 +885,26 @@ async def chat_autoplay(ws: WebSocket) -> None:
                 cost_so_far=cost_so_far,
             ),
         )
-        await ws.send_text(json.dumps({
+        await channel.send({
             "kind": "autoplay_done",
             "reason": done_reason,
             "iters": iters_run,
             "cost": round(cost_so_far, 6),
-        }))
+        })
 
     except WebSocketDisconnect:
         logger.info("Autoplay WS disconnected (task={t})", t=task_id)
     except Exception as e:  # noqa: BLE001
         logger.exception("Autoplay WS error")
         try:
-            await ws.send_text(json.dumps({"kind": "error", "error": str(e)[:300]}))
+            await channel.send({"kind": "error", "error": str(e)[:300]})
         except Exception:  # noqa: BLE001
             pass
     finally:
         # Mirror chat_stream's cleanup: if the dashboard disconnects mid-turn,
         # signal abort AND terminate the inner CLI so an orphaned captain does
         # not keep running (and burning tokens) after the socket is gone.
+        channel.stop_heartbeat()
         t = _tasks.pop(task_id, None) if task_id else None
         if t is not None:
             t.abort_event.set()
@@ -924,6 +955,11 @@ async def chat_loop(ws: WebSocket) -> None:
         await ws.close(code=1008)  # policy violation — cross-site handshake
         return
     await ws.accept()
+    # Serialized writer + 20s liveness pings: a long silent round
+    # (deep reasoning, minutes-long tool) must not look like a dead
+    # backend to the dashboard's idle watchdog. See _WsChannel.
+    channel = _WsChannel(ws)
+    channel.start_heartbeat()
     task_id: str | None = None
     task: _Task | None = None
     cost_so_far = 0.0
@@ -937,7 +973,7 @@ async def chat_loop(ws: WebSocket) -> None:
         try:
             cfg = wl.WorkLoopConfig.from_request(req)
         except ValueError as e:
-            await ws.send_text(json.dumps({"kind": "error", "error": str(e)}))
+            await channel.send({"kind": "error", "error": str(e)})
             return
 
         # Heavy route, same as autoplay — the loop is the captain working.
@@ -945,10 +981,10 @@ async def chat_loop(ws: WebSocket) -> None:
         # (same CLI, Moonshot Anthropic-compatible endpoint, own sessions).
         loop_kimi = (req.get("model") or "") == "kimi_k3"
         if loop_kimi and not _kimi_api_key():
-            await ws.send_text(json.dumps({
+            await channel.send({
                 "kind": "error",
                 "error": "Kimi K3: set KIMI_API_KEY in Settings first.",
-            }))
+            })
             return
         model_choice = _kimi_model() if loop_kimi else _resolve_model_choice("claude_opus")
         loop_cli_env = _cli_env_kimi() if loop_kimi else None
@@ -956,9 +992,9 @@ async def chat_loop(ws: WebSocket) -> None:
         task = _Task(task_id=task_id, kind="claude_cli")
         _tasks[task_id] = task
 
-        await ws.send_text(json.dumps(
+        await channel.send(
             {"kind": "started", "task_id": task_id, "model": model_choice}
-        ))
+        )
 
         rounds: list[dict[str, Any]] = []
         recent_signatures: list[str] = []
@@ -967,7 +1003,7 @@ async def chat_loop(ws: WebSocket) -> None:
 
         for i in range(cfg.max_iters):
             if task.abort_event.is_set():
-                await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                await channel.send({"kind": "aborted", "reason": "user"})
                 done_reason = done_reason or "caps"
                 break
 
@@ -977,9 +1013,9 @@ async def chat_loop(ws: WebSocket) -> None:
             if pre.stop:
                 done_reason = pre.reason
                 done_detail = pre.detail
-                await ws.send_text(json.dumps({
+                await channel.send({
                     "kind": "warning", "level": "loop_caps", "text": pre.detail,
-                }))
+                })
                 break
 
             iters_run = i + 1
@@ -999,9 +1035,9 @@ async def chat_loop(ws: WebSocket) -> None:
                 session_ns=loop_session_ns,
             ):
                 if task.abort_event.is_set():
-                    await ws.send_text(json.dumps({"kind": "aborted", "reason": "user"}))
+                    await channel.send({"kind": "aborted", "reason": "user"})
                     break
-                await ws.send_text(json.dumps(chunk))
+                await channel.send(chunk)
                 if chunk.get("kind") == "final":
                     turn_cost = float(chunk.get("cost_usd", 0.0) or 0.0)
                     final_text = str(chunk.get("text") or "")
@@ -1017,13 +1053,13 @@ async def chat_loop(ws: WebSocket) -> None:
             prev_marker = marker
             recent_signatures.append(marker.signature)
 
-            await ws.send_text(json.dumps({
+            await channel.send({
                 "kind": "loop_iter",
                 "i": i,
                 "status": marker.status,
                 "detail": marker.detail,
                 "cost_so_far": round(cost_so_far, 6),
-            }))
+            })
             rounds.append({
                 "i": i,
                 "status": marker.status,
@@ -1055,11 +1091,11 @@ async def chat_loop(ws: WebSocket) -> None:
                 done_reason = decision.reason
                 done_detail = decision.detail
                 if decision.reason in ("caps", "stuck"):
-                    await ws.send_text(json.dumps({
+                    await channel.send({
                         "kind": "warning",
                         "level": f"loop_{decision.reason}",
                         "text": decision.detail,
-                    }))
+                    })
                 break
 
         if done_reason is None:
@@ -1075,26 +1111,27 @@ async def chat_loop(ws: WebSocket) -> None:
             ),
             encoding="utf-8",
         )
-        await ws.send_text(json.dumps({
+        await channel.send({
             "kind": "loop_done",
             "reason": done_reason,
             "detail": done_detail,
             "iters": iters_run,
             "cost": round(cost_so_far, 6),
-        }))
+        })
 
     except WebSocketDisconnect:
         logger.info("Work-loop WS disconnected (task={t})", t=task_id)
     except Exception as e:  # noqa: BLE001
         logger.exception("Work-loop WS error")
         try:
-            await ws.send_text(json.dumps({"kind": "error", "error": str(e)[:300]}))
+            await channel.send({"kind": "error", "error": str(e)[:300]})
         except Exception:  # noqa: BLE001
             pass
     finally:
         # Mirror chat_stream/autoplay cleanup: a dashboard disconnect mid-turn
         # must abort AND terminate the inner CLI, or an orphaned captain keeps
         # looping (and burning tokens) with nobody watching.
+        channel.stop_heartbeat()
         t = _tasks.pop(task_id, None) if task_id else None
         if t is not None:
             t.abort_event.set()
