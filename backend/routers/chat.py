@@ -486,10 +486,44 @@ class _WsChannel:
         self._ws = ws
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        """True once the peer went away — frames are dropped from then on."""
+        return self._closed
 
     async def send(self, payload: dict[str, Any]) -> None:
+        """Write one frame. A CLOSED socket is not an error here.
+
+        The dashboard closes as soon as it sees `final` (so the turn timer
+        stops even when the close handshake lags), while the CLI can still
+        emit trailing frames — `system/task_notification` in particular.
+        Starlette then raises 'Cannot call "send" once a close message has
+        been sent.' That exception used to escape into the turn's relay loop,
+        blow past the `async for`, and land in the endpoint's error handler,
+        whose cleanup TERMINATES the captain — mid-tool, with no message the
+        user could interpret. Observed 2026-07-27 11:28:51: a chat turn died
+        exactly this way, leaving two Bash calls spinning forever.
+
+        So a closed peer is treated as "nowhere to write", not as a failure:
+        we mark the channel dead and keep draining the CLI so the captain
+        finishes the work it already started.
+        """
+        if self._closed:
+            return
         async with self._lock:
-            await self._ws.send_text(json.dumps(payload))
+            if self._closed:
+                return
+            try:
+                await self._ws.send_text(json.dumps(payload))
+            except (RuntimeError, WebSocketDisconnect) as e:
+                self._closed = True
+                self.stop_heartbeat()
+                logger.info(
+                    "WS peer gone ({e}) — dropping further frames, letting the turn finish",
+                    e=str(e)[:120],
+                )
 
     async def _beat(self) -> None:
         try:

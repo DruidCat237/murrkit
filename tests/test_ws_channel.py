@@ -91,3 +91,49 @@ async def test_a_dead_socket_does_not_crash_the_heartbeat(monkeypatch: pytest.Mo
     ch.start_heartbeat()
     await asyncio.sleep(0.05)  # the beat task must swallow it and exit quietly
     ch.stop_heartbeat()
+
+
+@pytest.mark.asyncio
+async def test_closed_peer_does_not_raise_into_the_turn() -> None:
+    """The dashboard closes on `final` while the CLI may still emit frames.
+
+    Starlette raises RuntimeError on a post-close send; if that escapes, the
+    endpoint's error path tears the captain down mid-tool (real incident
+    2026-07-27). The channel must absorb it instead.
+    """
+
+    class ClosedWs:
+        def __init__(self) -> None:
+            self.sent = 0
+
+        async def send_text(self, text: str) -> None:
+            self.sent += 1
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+    ws = ClosedWs()
+    ch = chat._WsChannel(ws)
+    await ch.send({"kind": "token", "text": "a"})   # must not raise
+    assert ch.closed is True
+    await ch.send({"kind": "token", "text": "b"})   # and must not even try again
+    await ch.send({"kind": "final", "text": "c"})
+    assert ws.sent == 1, "po zamknieciu nie wolno dalej pisac do gniazda"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_itself_when_the_peer_closes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(chat, "_WS_HEARTBEAT_INTERVAL_S", 0.01)
+
+    class ClosedWs:
+        def __init__(self) -> None:
+            self.sent = 0
+
+        async def send_text(self, text: str) -> None:
+            self.sent += 1
+            raise RuntimeError("Cannot call \"send\" once a close message has been sent.")
+
+    ws = ClosedWs()
+    ch = chat._WsChannel(ws)
+    ch.start_heartbeat()
+    await asyncio.sleep(0.06)
+    assert ws.sent == 1, "heartbeat dobija sie do zamknietego gniazda"
+    assert ch.closed is True
